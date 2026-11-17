@@ -4,6 +4,7 @@ protocolo (envelope Intelbras, branches create/update, XML sem format=json no
 Hikvision, circuit breaker de auth). Rodar: python -m unittest test_face_agent -v
 """
 import base64
+import json
 import os
 import sqlite3
 import tempfile
@@ -33,6 +34,7 @@ from face_agent.face_client_factory import create_face_client
 from face_agent.hikvision_client import MAX_CONSEC_AUTH_FAILURES, HikvisionClient, HikvisionTerminal
 from face_agent.intelbras_biot_client import IntelbrasBioTClient, IntelbrasBioTTerminal
 from face_agent.intelbras_client import IntelbrasClient, IntelbrasTerminal
+from face_agent.live_video import Go2rtcManager, build_rtsp_url
 from face_agent.local_store import _BR_TZ, LocalStore, PollCursor, RosterEntry
 from face_agent.schedule_enforcer import enforce_schedule, is_within_schedule, validity_state
 
@@ -1860,6 +1862,103 @@ class EventsFetchNameCacheTest(unittest.TestCase):
             for suffix in ("", "-wal", "-shm"):
                 if os.path.exists(path + suffix):
                     os.remove(path + suffix)
+
+
+class LiveVideoUrlTest(unittest.TestCase):
+    def _t(self, vendor, **kw):
+        return {"vendor": vendor, "host": "192.0.2.5", "username": "admin", "password": "pw", "rtsp_port": 554, "rtsp_path": "", **kw}
+
+    def test_url_by_vendor(self):
+        self.assertEqual(build_rtsp_url(self._t("hikvision")), "rtsp://admin:pw@192.0.2.5:554/Streaming/Channels/102")
+        dahua = "rtsp://admin:pw@192.0.2.5:554/cam/realmonitor?channel=1&subtype=1"
+        self.assertEqual(build_rtsp_url(self._t("intelbras")), dahua)
+        self.assertEqual(build_rtsp_url(self._t("intelbras_biot")), dahua)
+
+    def test_override_path_and_port(self):
+        url = build_rtsp_url(self._t("hikvision", rtsp_port=8554, rtsp_path="/Streaming/Channels/101"))
+        self.assertEqual(url, "rtsp://admin:pw@192.0.2.5:8554/Streaming/Channels/101")
+
+    def test_password_special_chars_are_quoted(self):
+        url = build_rtsp_url(self._t("hikvision", username="ad@m", password="p@ss:w/rd%1"))
+        self.assertEqual(url, "rtsp://ad%40m:p%40ss%3Aw%2Frd%251@192.0.2.5:554/Streaming/Channels/102")
+
+    def test_controlid_and_unknown_have_no_url(self):
+        self.assertIsNone(build_rtsp_url(self._t("controlid")))
+        self.assertIsNone(build_rtsp_url(self._t("controlid", rtsp_path="/x")))
+        self.assertIsNone(build_rtsp_url(self._t("outro")))
+
+    def test_store_normalizes_rtsp_fields(self):
+        fd, path = tempfile.mkstemp(suffix=".json")
+        os.close(fd)
+        os.remove(path)
+        try:
+            with patch.object(face_terminals_store, "STORE_PATH", path):
+                t = face_terminals_store.create_terminal({"vendor": "hikvision", "host": "h", "rtsp_port": "8554"})
+                self.assertEqual(t["rtsp_port"], 8554)
+                self.assertEqual(t["rtsp_path"], "")
+                t = face_terminals_store.update_terminal(t["id"], {"rtsp_port": ""})
+                self.assertEqual(t["rtsp_port"], 554)
+        finally:
+            if os.path.exists(path):
+                os.remove(path)
+
+
+class Go2rtcManagerTest(unittest.TestCase):
+    SRC = "rtsp://admin:p%40ss@192.0.2.5:554/Streaming/Channels/102"
+
+    def _manager(self, streams_listed=("L1",)):
+        popen = MagicMock()
+        popen.return_value.poll.return_value = None  # processo vivo
+        http = MagicMock()
+        http.put.return_value = MagicMock(status_code=400, text="config file disabled")
+        http.get.return_value = MagicMock(status_code=200, json=lambda: {n: {} for n in streams_listed})
+        return Go2rtcManager("/opt/zapy/bin/go2rtc", popen=popen, http=http), popen, http
+
+    def test_argv_has_no_password_and_listens_only_on_localhost(self):
+        manager, popen, _ = self._manager()
+        manager.ensure_stream("L1", self.SRC)
+        argv = popen.call_args.args[0]
+        self.assertEqual(argv[:2], ["/opt/zapy/bin/go2rtc", "-config"])
+        self.assertNotIn("p%40ss", " ".join(argv))
+        config = json.loads(argv[2])
+        self.assertEqual(config, {"api": {"listen": "127.0.0.1:1984"}, "rtsp": {"listen": ""},
+                                  "webrtc": {"listen": ""}, "srtp": {"listen": ""}})
+
+    def test_put_400_with_stream_listed_is_ok(self):
+        manager, _, http = self._manager()
+        manager.ensure_stream("L1", self.SRC)
+        self.assertEqual(http.put.call_args.kwargs["params"], {"name": "L1", "src": self.SRC})
+        http.delete.assert_not_called()
+        # mesmo src de novo: não registra outra vez
+        manager.ensure_stream("L1", self.SRC)
+        http.put.assert_called_once()
+
+    def test_stream_missing_after_put_is_error(self):
+        manager, _, _ = self._manager(streams_listed=())
+        with self.assertRaises(RuntimeError) as ctx:
+            manager.ensure_stream("L1", self.SRC)
+        self.assertNotIn("p%40ss", str(ctx.exception))
+
+    def test_changed_src_deletes_and_puts_again(self):
+        manager, _, http = self._manager()
+        manager.ensure_stream("L1", self.SRC)
+        manager.ensure_stream("L1", self.SRC.replace("102", "101"))
+        http.delete.assert_called_once()
+        self.assertEqual(http.delete.call_args.kwargs["params"], {"src": "L1"})
+        self.assertEqual(http.put.call_count, 2)
+
+    def test_dead_process_is_restarted(self):
+        manager, popen, http = self._manager()
+        manager.ensure_stream("L1", self.SRC)
+        popen.return_value.poll.return_value = 1  # morreu
+        manager.ensure_stream("L1", self.SRC)
+        self.assertEqual(popen.call_count, 2)
+        self.assertEqual(http.put.call_count, 2)  # processo novo não tem o stream
+
+    def test_available_checks_binary(self):
+        self.assertFalse(Go2rtcManager("/nao/existe/go2rtc").available)
+        with tempfile.NamedTemporaryFile() as f:
+            self.assertTrue(Go2rtcManager(f.name).available)
 
 if __name__ == "__main__":
     unittest.main()

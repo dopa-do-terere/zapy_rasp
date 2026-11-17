@@ -26,6 +26,10 @@ _DEFAULTS = {
     # Control iD: grupo/departamento ao qual todo usuário criado por aqui é associado — sem
     # isso o usuário fica sem regra de acesso nenhuma (validado ao vivo). "" = não associa.
     "group_id": "",
+    # Vídeo ao vivo no Cockpit (face_agent/live_video.py): porta RTSP e caminho opcional
+    # que sobrescreve o padrão do fabricante. Sem credencial aqui — vem de username/password.
+    "rtsp_port": 554,
+    "rtsp_path": "",
 }
 
 
@@ -51,8 +55,8 @@ def _normalize(data: dict, existing: dict | None = None) -> dict:
         if field not in data:
             continue
         value = data[field]
-        if field == "port":
-            value = int(value) if str(value).strip() else 80
+        if field in ("port", "rtsp_port"):
+            value = int(value) if str(value).strip() else _DEFAULTS[field]
         elif field in ("https", "verify_tls", "cockpit_enabled"):
             value = bool(value)
         elif field == "relay_level":

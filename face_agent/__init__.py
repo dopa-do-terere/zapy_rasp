@@ -3,7 +3,7 @@ Intelbras (XPE e Bio-T/SS) — enroll/revoke de rosto, abertura remota de porta,
 reboot —, guarda roster local com agenda de horário, e lê eventos de
 reconhecimento (poll)."""
 from .errors import FaceProvisioningError
-from .events_poller import EventsPoller, fetch_hikvision_events_since, fetch_intelbras_biot_events_since, fetch_intelbras_events_since
+from .events_poller import EventsPoller, fetch_hikvision_events_since, fetch_intelbras_biot_events_since, fetch_intelbras_events_since, make_events_fetch
 from .face_client_factory import create_face_client
 from .local_store import AccessEvent, LocalStore, PollCursor, RosterEntry
 from .schedule_enforcer import enforce_schedule, is_within_schedule, validity_state
@@ -22,4 +22,5 @@ __all__ = [
     "fetch_hikvision_events_since",
     "fetch_intelbras_events_since",
     "fetch_intelbras_biot_events_since",
+    "make_events_fetch",
 ]

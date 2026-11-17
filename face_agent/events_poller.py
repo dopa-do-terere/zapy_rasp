@@ -20,6 +20,9 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from .errors import FaceProvisioningError
+from .hikvision_client import HikvisionClient
+from .intelbras_biot_client import IntelbrasBioTClient
+from .intelbras_client import IntelbrasClient
 from .local_store import PollCursor
 
 logger = logging.getLogger(__name__)
@@ -361,6 +364,37 @@ def _biot_record_to_event(terminal_id: str, item: dict) -> Optional[dict]:
 
 
 # --- loop de poll por terminal ---
+
+def make_events_fetch(client, terminal_id: str):
+    """Monta o `fetch` do EventsPoller pro tipo de client — ou None se o terminal não
+    é varrido por poll (Control iD manda evento por webhook). Hikvision usa AcsEvent;
+    Intelbras XPE só tem doorlog; Intelbras Bio-T/SS usa recordFinder.cgi — três
+    protocolos, mesma assimetria do plano de integração facial (seção 6.3). Os três
+    expõem URL de foto por evento (fetch_picture) — Hikvision só em match bem-sucedido
+    (minor=75); Bio-T e XPE trazem foto até pra desconhecido. A foto é baixada antes de
+    devolver, assim já entra persistida no primeiro add_events."""
+    if isinstance(client, HikvisionClient):
+        def fetch_raw(cursor):
+            return fetch_hikvision_events_since(client, terminal_id, cursor)
+    elif isinstance(client, IntelbrasBioTClient):
+        def fetch_raw(cursor):
+            return fetch_intelbras_biot_events_since(client, terminal_id, cursor)
+    elif isinstance(client, IntelbrasClient):
+        # Direção fixa "unknown": FaceTerminal ainda não tem esse campo no servidor.
+        def fetch_raw(cursor):
+            return fetch_intelbras_events_since(client, terminal_id, "unknown", cursor)
+    else:
+        return None
+
+    def fetch(cursor):
+        events, next_cursor = fetch_raw(cursor)
+        for event in events:
+            url = event.get("picture_url")
+            event["picture"] = client.fetch_picture(url) if url else None
+        return events, next_cursor
+
+    return fetch
+
 
 class EventsPoller:
     """Cuida do poll de eventos de UM terminal — persiste o cursor no

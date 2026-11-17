@@ -21,16 +21,12 @@ from face_agent import (
     LocalStore,
     create_face_client,
     enforce_schedule,
-    fetch_hikvision_events_since,
-    fetch_intelbras_biot_events_since,
-    fetch_intelbras_events_since,
+    make_events_fetch,
     is_within_schedule,
     validity_state,
 )
 from face_agent.controlid_client import ControlIdClient
 from face_agent.controlid_uhf_client import ControlIdTerminal, ControlIdUhfClient
-from face_agent.hikvision_client import HikvisionClient
-from face_agent.intelbras_biot_client import IntelbrasBioTClient
 
 logger = logging.getLogger(__name__)
 
@@ -307,12 +303,8 @@ def run_zaccess_client(
 
         def _sync_event_pollers():
             """(Re)inicia um EventsPoller por terminal facial configurado, parando os que
-            saíram da config (ex.: terminal removido no painel). Hikvision usa AcsEvent;
-            Intelbras XPE só tem doorlog; Intelbras Bio-T/SS usa recordFinder.cgi — três
-            protocolos, mesma assimetria do plano de integração facial (seção 6.3),
-            refletida aqui na escolha da função de fetch por tipo de client. Os três
-            expõem URL de foto por evento (fetch_picture) — Hikvision só em match
-            bem-sucedido (minor=75); Bio-T e XPE trazem foto até pra desconhecido."""
+            saíram da config (ex.: terminal removido no painel). Terminal sem poll (Control
+            iD, que manda evento por webhook) fica de fora — ver make_events_fetch."""
             for tid in list(event_pollers.keys()):
                 if tid not in face_clients:
                     _, stop_evt = event_pollers.pop(tid)
@@ -321,33 +313,9 @@ def run_zaccess_client(
             for tid, client in face_clients.items():
                 if tid in event_pollers:
                     continue
-                if isinstance(client, HikvisionClient):
-                    def fetch(cursor, c=client, t=tid):
-                        events, next_cursor = fetch_hikvision_events_since(c, t, cursor)
-                        # Baixa a foto capturada na hora (pictureURL só vem em match bem-sucedido)
-                        # antes de devolver — assim já entra persistida no primeiro add_events.
-                        for event in events:
-                            url = event.get("picture_url")
-                            event["picture"] = c.fetch_picture(url) if url else None
-                        return events, next_cursor
-                elif isinstance(client, IntelbrasBioTClient):
-                    def fetch(cursor, c=client, t=tid):
-                        events, next_cursor = fetch_intelbras_biot_events_since(c, t, cursor)
-                        for event in events:
-                            url = event.get("picture_url")
-                            event["picture"] = c.fetch_picture(url) if url else None
-                        return events, next_cursor
-                else:
-                    # Direção fixa "unknown": FaceTerminal ainda não tem esse campo no
-                    # servidor (sem consumidor até schedule_enforcer/events_poller existirem).
-                    def fetch(cursor, c=client, t=tid):
-                        events, next_cursor = fetch_intelbras_events_since(c, t, "unknown", cursor)
-                        # Baixa a foto do doorlog (campo Picture, vem até pra desconhecido)
-                        # antes de devolver — assim já entra persistida no primeiro add_events.
-                        for event in events:
-                            url = event.get("picture_url")
-                            event["picture"] = c.fetch_picture(url) if url else None
-                        return events, next_cursor
+                fetch = make_events_fetch(client, tid)
+                if fetch is None:
+                    continue
                 poller = EventsPoller(local_store, tid, fetch)
                 thread, stop_evt = poller.start(_emit_identified_events, interval_seconds=FACE_EVENTS_POLL_INTERVAL)
                 event_pollers[tid] = (thread, stop_evt)

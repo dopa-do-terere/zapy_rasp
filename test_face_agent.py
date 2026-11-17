@@ -23,6 +23,7 @@ from face_agent.events_poller import (
     fetch_hikvision_events_since,
     fetch_intelbras_biot_events_since,
     fetch_intelbras_events_since,
+    make_events_fetch,
 )
 from face_agent.controlid_client import ControlIdClient, ControlIdTerminal
 from face_agent.controlid_uhf_client import ControlIdUhfClient
@@ -1596,6 +1597,35 @@ class EventsPollerTest(unittest.TestCase):
         self.assertEqual(events, fake_events)
         store.set_cursor.assert_called_once_with(fake_cursor)
 
+
+
+class MakeEventsFetchTest(unittest.TestCase):
+    CASES = [
+        (HikvisionClient, "fetch_hikvision_events_since"),
+        (IntelbrasBioTClient, "fetch_intelbras_biot_events_since"),
+        (IntelbrasClient, "fetch_intelbras_events_since"),
+    ]
+
+    def test_fetch_downloads_picture_for_each_vendor(self):
+        for cls, fetcher in self.CASES:
+            with self.subTest(vendor=cls.__name__):
+                client = MagicMock(spec=cls)
+                client.fetch_picture.return_value = JPEG
+                cursor = PollCursor(terminal_id="t1")
+                next_cursor = PollCursor(terminal_id="t1", search_id="2")
+                events = [{"dedupe_key": "a", "picture_url": "/pic/1"}, {"dedupe_key": "b", "picture_url": None}]
+                with patch(f"face_agent.events_poller.{fetcher}", return_value=(events, next_cursor)) as fake:
+                    fetch = make_events_fetch(client, "t1")
+                    got, got_cursor = fetch(cursor)
+                self.assertIs(fake.call_args.args[0], client)
+                self.assertEqual(fake.call_args.args[1], "t1")
+                self.assertIs(got_cursor, next_cursor)
+                self.assertEqual(got[0]["picture"], JPEG)
+                self.assertIsNone(got[1]["picture"])
+                client.fetch_picture.assert_called_once_with("/pic/1")
+
+    def test_control_id_has_no_fetch(self):
+        self.assertIsNone(make_events_fetch(MagicMock(spec=ControlIdClient), "t1"))
 
 if __name__ == "__main__":
     unittest.main()

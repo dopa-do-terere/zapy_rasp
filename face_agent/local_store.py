@@ -75,6 +75,14 @@ CREATE TABLE IF NOT EXISTS card_roster (
     enrolled INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (terminal_id, employee_no, card_no)
 );
+-- Fotos de evento a apagar de quem teve a validade (accessSchedule.validUntil) expirada:
+-- a linha de roster some na hora, mas as fotos ficam até purge_after (ISO UTC).
+CREATE TABLE IF NOT EXISTS picture_purge (
+    terminal_id TEXT NOT NULL,
+    employee_no TEXT NOT NULL,
+    purge_after TEXT NOT NULL,
+    PRIMARY KEY (terminal_id, employee_no)
+);
 """
 
 
@@ -105,6 +113,9 @@ class RosterEntry:
     jpeg: bytes
     access_schedule: Optional[dict]
     enrolled: bool
+    # personId do face:enroll que chegou fora da janela (ack "scheduled"): o ack
+    # "enrolled" sai quando o schedule_enforcer cadastrar de fato.
+    pending_ack_person_id: Optional[str] = None
 
 
 @dataclass
@@ -150,6 +161,7 @@ class LocalStore:
         self._conn.executescript(_SCHEMA)
         _ensure_column(self._conn, "events", "picture", "BLOB")
         _ensure_column(self._conn, "events", "device_name", "TEXT")
+        _ensure_column(self._conn, "roster", "pending_ack_person_id", "TEXT")
         self._conn.commit()
 
     def close(self) -> None:
@@ -159,16 +171,36 @@ class LocalStore:
     # --- roster ---
 
     def upsert_roster(self, terminal_id: str, employee_no: str, name: str, jpeg: bytes,
-                       access_schedule: Optional[dict]) -> None:
+                       access_schedule: Optional[dict], pending_ack_person_id: Optional[str] = None) -> None:
         with self._lock:
             self._conn.execute(
                 """
-                INSERT INTO roster (terminal_id, employee_no, name, jpeg, access_schedule, enrolled)
-                VALUES (?, ?, ?, ?, ?, 0)
+                INSERT INTO roster (terminal_id, employee_no, name, jpeg, access_schedule, enrolled, pending_ack_person_id)
+                VALUES (?, ?, ?, ?, ?, 0, ?)
                 ON CONFLICT(terminal_id, employee_no) DO UPDATE SET
-                    name = excluded.name, jpeg = excluded.jpeg, access_schedule = excluded.access_schedule
+                    name = excluded.name, jpeg = excluded.jpeg, access_schedule = excluded.access_schedule,
+                    pending_ack_person_id = excluded.pending_ack_person_id
                 """,
-                (terminal_id, employee_no, name, jpeg, json.dumps(access_schedule) if access_schedule else None),
+                (terminal_id, employee_no, name, jpeg, json.dumps(access_schedule) if access_schedule else None,
+                 pending_ack_person_id),
+            )
+            self._conn.commit()
+
+    def clear_pending_ack(self, terminal_id: str, employee_no: str) -> None:
+        with self._lock:
+            self._conn.execute(
+                "UPDATE roster SET pending_ack_person_id = NULL WHERE terminal_id = ? AND employee_no = ?",
+                (terminal_id, employee_no),
+            )
+            self._conn.commit()
+
+    def schedule_picture_purge(self, terminal_id: str, employee_no: str, purge_after: str) -> None:
+        """Agenda o apagamento das fotos de evento da pessoa (ISO UTC); upsert."""
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO picture_purge (terminal_id, employee_no, purge_after) VALUES (?, ?, ?) "
+                "ON CONFLICT(terminal_id, employee_no) DO UPDATE SET purge_after = excluded.purge_after",
+                (terminal_id, employee_no, purge_after),
             )
             self._conn.commit()
 
@@ -183,13 +215,15 @@ class LocalStore:
     def list_by_terminal(self, terminal_id: str) -> list[RosterEntry]:
         with self._lock:
             rows = self._conn.execute(
-                "SELECT terminal_id, employee_no, name, jpeg, access_schedule, enrolled FROM roster WHERE terminal_id = ?",
+                "SELECT terminal_id, employee_no, name, jpeg, access_schedule, enrolled, pending_ack_person_id "
+                "FROM roster WHERE terminal_id = ?",
                 (terminal_id,),
             ).fetchall()
         return [
             RosterEntry(
                 terminal_id=r[0], employee_no=r[1], name=r[2], jpeg=r[3],
                 access_schedule=json.loads(r[4]) if r[4] else None, enrolled=bool(r[5]),
+                pending_ack_person_id=r[6],
             )
             for r in rows
         ]

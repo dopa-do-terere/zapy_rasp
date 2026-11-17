@@ -7,7 +7,7 @@ import base64
 import os
 import tempfile
 import unittest
-from datetime import datetime
+from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 
 import requests
@@ -30,7 +30,7 @@ from face_agent.hikvision_client import MAX_CONSEC_AUTH_FAILURES, HikvisionClien
 from face_agent.intelbras_biot_client import IntelbrasBioTClient, IntelbrasBioTTerminal
 from face_agent.intelbras_client import IntelbrasClient, IntelbrasTerminal
 from face_agent.local_store import LocalStore, PollCursor, RosterEntry
-from face_agent.schedule_enforcer import enforce_schedule, is_within_schedule
+from face_agent.schedule_enforcer import enforce_schedule, is_within_schedule, validity_state
 
 JPEG = b"\xff\xd8" + b"x" * 10 + b"\xff\xd9"
 
@@ -925,6 +925,12 @@ class LocalStoreTest(unittest.TestCase):
         self.store.remove_roster("t1", "123")
         self.assertEqual(self.store.list_by_terminal("t1"), [])
 
+    def test_roster_pending_ack_set_and_clear(self):
+        self.store.upsert_roster("t1", "9", "Convidado", JPEG, {"validFrom": "2026-03-11T00:00:00Z"}, pending_ack_person_id="p9")
+        self.assertEqual(self.store.list_by_terminal("t1")[0].pending_ack_person_id, "p9")
+        self.store.clear_pending_ack("t1", "9")
+        self.assertIsNone(self.store.list_by_terminal("t1")[0].pending_ack_person_id)
+
     def test_card_roster_upsert_list_set_enrolled_remove(self):
         self.store.upsert_card_roster("t1", "123", "Fulano", "AAABBB")
         entries = self.store.list_card_by_terminal("t1")
@@ -1156,6 +1162,104 @@ class ScheduleEnforcerTest(unittest.TestCase):
         self.assertEqual(result["failed"], 1)
         self.assertEqual(result["enrolled"], 1)
         self.assertEqual(client.enroll_face.call_count, 2)
+
+
+class ScheduleValidityTest(unittest.TestCase):
+    NOW = datetime(2026, 3, 10, 12, 0, tzinfo=timezone.utc)
+    ALL_DAYS = {d: True for d in ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]}
+
+    def test_validity_state(self):
+        self.assertEqual(validity_state(None, self.NOW), "none")
+        self.assertEqual(validity_state({"enabled": True}, self.NOW), "none")
+        self.assertEqual(validity_state({"validFrom": "2026-03-11T00:00:00Z"}, self.NOW), "before")
+        self.assertEqual(validity_state({"validFrom": "2026-03-01T00:00:00Z", "validUntil": "2026-03-20T00:00:00Z"}, self.NOW), "active")
+        self.assertEqual(validity_state({"validUntil": "2026-03-10T12:00:00Z"}, self.NOW), "expired")  # now == validUntil
+        self.assertEqual(validity_state({"validUntil": "2026-03-10T12:00:01+00:00"}, self.NOW), "active")
+        with self.assertLogs("face_agent.schedule_enforcer", "WARNING"):
+            self.assertEqual(validity_state({"validUntil": "lixo"}, self.NOW), "none")
+
+    def test_validity_state_naive_now_is_local_time(self):
+        local_now = datetime(2026, 3, 10, 12, 0)
+        utc_now = local_now.astimezone(timezone.utc)
+        just_after = utc_now.replace(second=1).isoformat()
+        self.assertEqual(validity_state({"validUntil": just_after}, local_now), "active")
+        self.assertEqual(validity_state({"validUntil": utc_now.isoformat()}, local_now), "expired")
+
+    def test_is_within_schedule_validity_applies_even_when_disabled(self):
+        self.assertFalse(is_within_schedule({"enabled": False, "validFrom": "2026-03-11T00:00:00Z"}, self.NOW))
+        self.assertFalse(is_within_schedule({"enabled": False, "validUntil": "2026-03-01T00:00:00Z"}, self.NOW))
+        self.assertTrue(is_within_schedule({"enabled": False, "validUntil": "2026-03-20T00:00:00Z"}, self.NOW))
+        # dentro da validade, mas fora da agenda semanal habilitada
+        closed = {"enabled": True, "startTime": "00:00", "endTime": "00:01", "weekdays": self.ALL_DAYS,
+                  "validUntil": "2026-03-20T00:00:00Z"}
+        self.assertFalse(is_within_schedule(closed, self.NOW))
+
+    def _entry(self, schedule, enrolled=False, pending=None):
+        return RosterEntry(terminal_id="t1", employee_no="9", name="Convidado", jpeg=JPEG, enrolled=enrolled,
+                           access_schedule=schedule, pending_ack_person_id=pending)
+
+    def test_enforce_before_window_does_not_enroll_then_enrolls_and_acks_once(self):
+        schedule = {"enabled": False, "validFrom": "2026-03-11T00:00:00Z", "validUntil": "2026-03-12T00:00:00Z"}
+        store, client, on_enrolled = MagicMock(), MagicMock(), MagicMock()
+        store.list_by_terminal.return_value = [self._entry(schedule, pending="p9")]
+
+        result = enforce_schedule(client, store, "t1", "T1", now=self.NOW, on_enrolled=on_enrolled)
+        self.assertEqual(result["enrolled"], 0)
+        client.enroll_face.assert_not_called()
+        on_enrolled.assert_not_called()
+
+        inside = datetime(2026, 3, 11, 6, 0, tzinfo=timezone.utc)
+        result = enforce_schedule(client, store, "t1", "T1", now=inside, on_enrolled=on_enrolled)
+        self.assertEqual(result["enrolled"], 1)
+        client.enroll_face.assert_called_once_with("9", "Convidado", JPEG)
+        store.set_enrolled.assert_called_once_with("t1", "9", True)
+        store.clear_pending_ack.assert_called_once_with("t1", "9")
+        on_enrolled.assert_called_once_with("p9", "t1")
+
+        # próximo ciclo já sem pendente e enrolado: nada muda, sem ack de novo
+        store.list_by_terminal.return_value = [self._entry(schedule, enrolled=True)]
+        enforce_schedule(client, store, "t1", "T1", now=inside, on_enrolled=on_enrolled)
+        on_enrolled.assert_called_once()
+        client.enroll_face.assert_called_once()
+
+    def test_enforce_expired_removes_from_terminal_and_roster_and_schedules_purge(self):
+        schedule = {"enabled": False, "validUntil": "2026-03-01T00:00:00Z"}
+        store, client = MagicMock(), MagicMock()
+        store.list_by_terminal.return_value = [self._entry(schedule, enrolled=True)]
+
+        result = enforce_schedule(client, store, "t1", "T1", now=self.NOW)
+
+        self.assertEqual(result["expired"], 1)
+        client.delete_user_info.assert_called_once_with("9")
+        store.remove_roster.assert_called_once_with("t1", "9")
+        store.schedule_picture_purge.assert_called_once_with("t1", "9", "2026-03-31T00:00:00+00:00")
+
+    def test_enforce_expired_not_enrolled_skips_terminal_delete(self):
+        store, client = MagicMock(), MagicMock()
+        store.list_by_terminal.return_value = [self._entry({"validUntil": "2026-03-01T00:00:00Z"}, enrolled=False)]
+        enforce_schedule(client, store, "t1", "T1", now=self.NOW)
+        client.delete_user_info.assert_not_called()
+        store.remove_roster.assert_called_once_with("t1", "9")
+
+    def test_enforce_expired_delete_failure_keeps_roster(self):
+        store, client = MagicMock(), MagicMock()
+        client.delete_user_info.side_effect = Exception("terminal offline")
+        store.list_by_terminal.return_value = [self._entry({"validUntil": "2026-03-01T00:00:00Z"}, enrolled=True)]
+
+        result = enforce_schedule(client, store, "t1", "T1", now=self.NOW)
+
+        self.assertEqual(result["failed"], 1)
+        self.assertEqual(result["expired"], 0)
+        store.remove_roster.assert_not_called()
+        store.schedule_picture_purge.assert_not_called()
+
+    def test_enforce_without_validity_unchanged(self):
+        store, client = MagicMock(), MagicMock()
+        store.list_by_terminal.return_value = [self._entry(None), self._entry({"enabled": False})]
+        result = enforce_schedule(client, store, "t1", "T1", now=self.NOW)
+        self.assertEqual(result, {"enrolled": 0, "removed": 0, "expired": 0, "failed": 0, "restricted_count": 0})
+        client.enroll_face.assert_not_called()
+        client.delete_user_info.assert_not_called()
 
 
 class EventsPollerFieldTest(unittest.TestCase):

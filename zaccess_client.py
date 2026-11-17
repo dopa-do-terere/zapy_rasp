@@ -24,6 +24,8 @@ from face_agent import (
     fetch_hikvision_events_since,
     fetch_intelbras_biot_events_since,
     fetch_intelbras_events_since,
+    is_within_schedule,
+    validity_state,
 )
 from face_agent.controlid_client import ControlIdClient
 from face_agent.controlid_uhf_client import ControlIdTerminal, ControlIdUhfClient
@@ -545,13 +547,29 @@ def run_zaccess_client(
                 threading.Thread(target=_emit_enroll_ack, args=(person_id, terminal_id, "failed", "terminal não configurado neste zapy"), daemon=True).start()
                 return
 
+            schedule = data.get("accessSchedule")
+
             def run():
                 try:
                     jpeg = base64.b64decode(jpeg_b64)
+                    # Validade por data (validFrom/validUntil): expirada nem guarda; fora da
+                    # janela guarda no roster com ack pendente e o schedule_enforcer cadastra
+                    # (e manda o ack "enrolled") quando a janela abrir.
+                    validity = validity_state(schedule)
+                    if validity == "expired":
+                        logger.info("ZAccess: face:enroll de %s ignorado no terminal %s - validade expirada", name, terminal_id)
+                        _emit_enroll_ack(person_id, terminal_id, "failed", "validade do acesso expirada")
+                        return
+                    if validity != "none" and not is_within_schedule(schedule):
+                        local_store.upsert_roster(terminal_id, employee_no, name, jpeg, schedule, pending_ack_person_id=person_id)
+                        local_store.set_enrolled(terminal_id, employee_no, False)
+                        logger.info("ZAccess: rosto de %s agendado no terminal %s (fora da janela)", name, terminal_id)
+                        _emit_enroll_ack(person_id, terminal_id, "scheduled")
+                        return
                     client.enroll_face(employee_no, name, jpeg)
                     # Guarda no roster local (com a foto e a agenda) pra schedule_enforcer
                     # poder reaplicar sozinho, sem depender da nuvem estar no ar.
-                    local_store.upsert_roster(terminal_id, employee_no, name, jpeg, data.get("accessSchedule"))
+                    local_store.upsert_roster(terminal_id, employee_no, name, jpeg, schedule)
                     local_store.set_enrolled(terminal_id, employee_no, True)
                     logger.info("ZAccess: rosto de %s cadastrado no terminal %s", name, terminal_id)
                     _emit_enroll_ack(person_id, terminal_id, "enrolled")
@@ -990,7 +1008,10 @@ def run_zaccess_client(
                     break
                 for terminal_id, client in list(face_clients.items()):
                     try:
-                        enforce_schedule(client, local_store, terminal_id, terminal_id)
+                        enforce_schedule(
+                            client, local_store, terminal_id, terminal_id,
+                            on_enrolled=lambda pid, tid: _emit_enroll_ack(pid, tid, "enrolled"),
+                        )
                     except Exception:
                         logger.exception("ZAccess: falha no schedule_enforcer do terminal %s", terminal_id)
 

@@ -7,6 +7,7 @@ import subprocess
 import threading
 import time
 from datetime import datetime, timedelta, timezone
+from urllib.parse import urlparse
 
 from dotenv import load_dotenv
 from flask import Flask, render_template, redirect, url_for, request, jsonify, session, Response
@@ -53,6 +54,9 @@ def _load_or_create_secret_key() -> str:
 
 app = Flask(__name__, template_folder='painel_rele/templates')
 app.secret_key = _load_or_create_secret_key()
+# Lax: outro site não manda o cookie do painel em requisição/WS dele (Firefox não aplica Lax
+# por padrão). O painel é todo mesma origem, então não quebra nada.
+app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
 sock = Sock(app)
 
 # Mesmo arquivo SQLite (WAL) que zaccess_client.py escreve — conexão própria só de
@@ -676,6 +680,12 @@ def _handle_live_ws(ws, terminal_id):
     """Proxy MSE do Cockpit. flask-sock completa o handshake antes daqui, então recusa vira
     close code: 4401 sem login, 4403 sem permissão/vídeo desligado, 4404 sem terminal/RTSP/
     go2rtc, 4429 limite. Nunca loga a URL RTSP (tem a senha)."""
+    # Origem primeiro: WS não tem CORS, então outro site aberto no navegador do porteiro
+    # conseguiria abrir esta conexão com o cookie dele. Origin ausente = cliente que não é
+    # navegador, segue as demais regras.
+    origin = request.headers.get("Origin")
+    if origin and urlparse(origin).netloc != request.host:
+        return ws.close(4403, "origem")
     if not session.get("logged_in"):
         return ws.close(4401, "login")
     terminal = face_terminals_store.get_terminal(terminal_id)

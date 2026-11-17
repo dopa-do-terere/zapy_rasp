@@ -2125,15 +2125,32 @@ class LiveWsRouteTest(unittest.TestCase):
         if os.path.exists(self._path):
             os.remove(self._path)
 
-    def _run(self, terminal_id=None, role="admin"):
+    def _run(self, terminal_id=None, role="admin", headers=None):
         ws = FakeWs()
-        with self.app_module.app.test_request_context():
+        with self.app_module.app.test_request_context(headers=headers or {}):
             if role:
                 from flask import session
                 session["logged_in"] = True
                 session["role"] = role
             self.app_module._handle_live_ws(ws, terminal_id or self.terminal["id"])
         return ws
+
+    def test_4403_foreign_origin_before_anything_else(self):
+        ws = self._run(headers={"Origin": "http://evil.example"})
+        self.assertEqual(ws.closed_with, (4403, "origem"))
+        self.manager.ensure_stream.assert_not_called()
+        # mesmo sem login: origem é checada primeiro
+        self.assertEqual(self._run(role=None, headers={"Origin": "http://evil.example"}).closed_with[0], 4403)
+
+    def test_same_origin_or_no_origin_proceeds(self):
+        ws = self._run(headers={"Origin": "http://localhost"})  # request.host do test_request_context
+        self.assertIsNone(ws.closed_with)
+        self.proxy.assert_called_once()
+        self.assertIsNone(self._run().closed_with)
+        self.assertEqual(self.proxy.call_count, 2)
+
+    def test_session_cookie_samesite_lax(self):
+        self.assertEqual(self.app_module.app.config["SESSION_COOKIE_SAMESITE"], "Lax")
 
     def test_4401_without_login(self):
         self.assertEqual(self._run(role=None).closed_with[0], 4401)

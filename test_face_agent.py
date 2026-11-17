@@ -2239,6 +2239,90 @@ class LiveWsRouteTest(unittest.TestCase):
         self.assertEqual(self.app_module._live_viewers, 0)
 
 
+class CockpitLayoutTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        LiveWsRouteTest.setUpClass.__func__(cls)
+
+    def setUp(self):
+        fd, path = tempfile.mkstemp(suffix=".json")
+        os.close(fd)
+        os.remove(path)
+        self._path = path
+        patches = [
+            patch.object(face_terminals_store, "STORE_PATH", path),
+            patch.object(self.app_module, "live_video", MagicMock(available=True)),
+            patch.dict(os.environ, {"ZAPY_LIVE_ENABLED": ""}),
+        ]
+        for p in patches:
+            p.start()
+            self.addCleanup(p.stop)
+
+    def tearDown(self):
+        if os.path.exists(self._path):
+            os.remove(self._path)
+
+    def _html(self, role="admin"):
+        client = self.app_module.app.test_client()
+        with client.session_transaction() as sess:
+            sess["logged_in"] = True
+            sess["role"] = role
+        return client.get("/cockpit").get_data(as_text=True)
+
+    def test_single_terminal_has_stage_without_list(self):
+        face_terminals_store.create_terminal({"vendor": "hikvision", "host": "192.0.2.5", "name": "Portaria", "password": "pw"})
+        html = self._html()
+        self.assertIn('class="panel live-area single"', html)
+        self.assertIn('id="stageVideo"', html)
+        self.assertNotIn('id="liveList"', html)
+        self.assertNotIn('"pw"', html)
+        self.assertIn("live-player.js", html)
+
+    def test_two_terminals_stage_and_list(self):
+        face_terminals_store.create_terminal({"vendor": "hikvision", "host": "192.0.2.5", "name": "A"})
+        face_terminals_store.create_terminal({"vendor": "intelbras", "host": "192.0.2.6", "name": "B"})
+        html = self._html()
+        self.assertIn('class="panel live-area multi"', html)
+        self.assertIn('id="liveList"', html)
+        self.assertEqual(html.count('<li class="live-item'), 2)
+
+    def test_terminal_without_rtsp_renders_fallback(self):
+        face_terminals_store.create_terminal({"vendor": "controlid", "host": "192.0.2.7", "name": "Catraca"})
+        html = self._html()
+        self.assertIn('id="stageFallback" class="live-fallback"', html)
+        self.assertIn("Vídeo indisponível", html)
+        self.assertIn("fabricante sem vídeo ao vivo", html)
+
+    def test_live_flag_follows_global_and_terminal_switches(self):
+        t = face_terminals_store.create_terminal({"vendor": "hikvision", "host": "192.0.2.5"})
+        self.assertIsNone(self.app_module._live_unavailable_reason(t))
+        t["live_enabled"] = False
+        self.assertEqual(self.app_module._live_unavailable_reason(t), "vídeo desligado neste terminal")
+        t["live_enabled"] = True
+        os.environ["ZAPY_LIVE_ENABLED"] = "0"
+        self.assertEqual(self.app_module._live_unavailable_reason(t), "vídeo ao vivo desligado")
+        os.environ["ZAPY_LIVE_ENABLED"] = ""
+        self.app_module.live_video.available = False
+        self.assertEqual(self.app_module._live_unavailable_reason(t), "go2rtc não instalado")
+
+    def test_porteiro_reads_last_event_of_terminal(self):
+        client = self.app_module.app.test_client()
+        with client.session_transaction() as sess:
+            sess["logged_in"] = True
+            sess["role"] = "porteiro"
+        with patch.object(self.app_module.local_store, "query_events", return_value=([], 0)) as query:
+            res = client.get("/api/events?terminal=abc&pageSize=1")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(query.call_args.kwargs["terminal_id"], "abc")
+        self.assertEqual(query.call_args.kwargs["limit"], 1)
+
+    def test_live_player_script_is_served(self):
+        res = self.app_module.app.test_client().get("/static/live-player.js")
+        self.assertEqual(res.status_code, 200)
+        self.assertIn(b"LivePlayer", res.data)
+        res.close()
+
+
 class LiveConfigTest(unittest.TestCase):
     def test_allowed_keys(self):
         import config_env

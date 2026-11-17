@@ -162,17 +162,27 @@ duplicar o log — o log final só é criado quando esse ack chega, nunca antes.
 | `ZACCESS_DEVICE_SERIAL` | Número de série do dispositivo no ZAccess |
 | `ZACCESS_DEVICE_TOKEN` | Token do dispositivo (opcional) |
 | `PORT` | Porta do painel web local (padrão: 3080) |
+| `ZAPY_LIVE_ENABLED` | Vídeo ao vivo no Cockpit: `0` desliga (vazio = ativo) |
 | `ZAPY_LIVE_MAX_VIEWERS` | Máximo de vídeos ao vivo abertos ao mesmo tempo no Cockpit (padrão `0` = ilimitado) |
 
 ## Vídeo ao vivo
 
-O Cockpit mostra o vídeo ao vivo (substream) dos terminais faciais do cadastro local
-(Hikvision e Intelbras; Control iD não tem). O `install.sh` (e o `install-windows.ps1`)
-baixa o go2rtc v1.9.4 para `bin/`, conferindo o SHA-256; se falhar, o zapy funciona sem
-vídeo. O go2rtc escuta só em `127.0.0.1:1984` (RTSP/WebRTC desligados) e o painel repassa
-o MP4 — nenhuma porta nova fica exposta na rede. Porta e caminho RTSP podem ser ajustados
-no cadastro do terminal. Limite de visualizações simultâneas: `ZAPY_LIVE_MAX_VIEWERS` no
-`.env`. Não funciona no Safari (MP4 fragmentado).
+O Cockpit mostra o vídeo ao vivo (substream H.264) dos terminais faciais do cadastro
+local (Hikvision e Intelbras; Control iD não tem): um terminal em destaque, com o último
+reconhecimento e o botão "Abrir porta", e, com 2 ou mais, a lista lateral com miniaturas.
+
+- O `install.sh` (e o `install-windows.ps1`) baixa o go2rtc v1.9.4 para `bin/`, conferindo o
+  SHA-256; se falhar, o zapy funciona sem vídeo.
+- O go2rtc escuta só em `127.0.0.1:1984` (RTSP/WebRTC desligados). O navegador recebe o
+  vídeo por MSE via WebSocket do próprio painel (`/ws/cockpit/face-terminals/<id>/live`),
+  que filtra as mensagens e nunca repassa a URL RTSP com senha — nenhuma porta nova fica
+  exposta na rede.
+- Em Configuração: liga/desliga o vídeo (`ZAPY_LIVE_ENABLED`) e o limite de visualizações
+  simultâneas (`ZAPY_LIVE_MAX_VIEWERS`, 0 = ilimitado; miniaturas contam). Vale na hora, sem
+  reiniciar.
+- Em Terminais faciais: vídeo ao vivo por terminal, porta e caminho RTSP, e o botão
+  "Testar vídeo" (mostra o codec ou o motivo da falha).
+- Não funciona no Safari.
 
 ## Hardware – pinos (BCM / físico no header 40 v2/v3)
 

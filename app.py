@@ -545,11 +545,15 @@ def cockpit_page():
     is_admin = session.get("role") == "admin"
     allowed_relays = set(RELAY_PINS.keys()) if is_admin else _cockpit_allowed_relay_ids()
     relays = [{"id": rid, "pulseSeconds": _get_pulse_seconds(rid)} for rid in RELAY_PINS if rid in allowed_relays]
-    terminals = [
-        dict(face_terminals_store.for_display(t), live=_live_available(t))
-        for t in face_terminals_store.list_terminals()
-        if is_admin or t.get("cockpit_enabled", True)
-    ]
+    # Só o que o Cockpit precisa (nada de credencial): id, nome, host e se tem vídeo ao vivo
+    # (com o motivo quando não tem — vira a mensagem do fallback).
+    terminals = []
+    for t in face_terminals_store.list_terminals():
+        if not (is_admin or t.get("cockpit_enabled", True)):
+            continue
+        reason = _live_unavailable_reason(t)
+        terminals.append({"id": t["id"], "name": t.get("name") or t.get("host"), "host": t.get("host"),
+                          "live": reason is None, "reason": reason})
     antennas = [
         vehicle_antennas_store.for_display(a) for a in vehicle_antennas_store.list_antennas()
         if is_admin or a.get("cockpit_enabled", True)
@@ -619,8 +623,18 @@ def api_cockpit_face_terminal_open(terminal_id):
     return jsonify({"success": bool(result.get("ok")), "reason": result.get("reason")}), (200 if result.get("ok") else 502)
 
 
-def _live_available(terminal: dict) -> bool:
-    return live_video.available and build_rtsp_url(terminal) is not None
+def _live_unavailable_reason(terminal: dict) -> str | None:
+    """None = vídeo ao vivo disponível pro terminal; senão o motivo (mensagem do Cockpit).
+    Mesmas regras da rota WS (_handle_live_ws)."""
+    if not _live_enabled_globally():
+        return "vídeo ao vivo desligado"
+    if not terminal.get("live_enabled", True):
+        return "vídeo desligado neste terminal"
+    if build_rtsp_url(terminal) is None:
+        return "fabricante sem vídeo ao vivo"
+    if not live_video.available:
+        return "go2rtc não instalado"
+    return None
 
 
 def _live_max_viewers() -> int:

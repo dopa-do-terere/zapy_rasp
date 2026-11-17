@@ -71,6 +71,46 @@
     .ev-filters .row-actions .results-count { font-size: 0.72rem; color: var(--muted-foreground); }
     .btn-clear { display: inline-flex; align-items: center; gap: 4px; font-size: 0.72rem; padding: 5px 10px; }
 
+    /* --- terminais faciais: destaque com vídeo ao vivo + lista lateral --- */
+    .live-area { margin-bottom: 16px; }
+    .live-layout { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; }
+    .live-area.multi .live-layout { grid-template-columns: minmax(0, 1fr) 260px; }
+    .live-screen {
+        position: relative; width: 100%; aspect-ratio: 16 / 9; background: #000;
+        border-radius: var(--radius-lg); overflow: hidden;
+    }
+    .live-screen video { width: 100%; height: 100%; object-fit: contain; display: block; background: #000; }
+    .live-fallback {
+        position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;
+        gap: 8px; background: var(--muted); color: var(--muted-foreground); text-align: center; padding: 16px;
+    }
+    .live-fallback[hidden] { display: none; }
+    .live-fallback img { max-width: 60%; max-height: 60%; border-radius: var(--radius-md); object-fit: cover; }
+    .live-fallback .fallback-msg { font-size: 0.8rem; font-weight: 600; }
+    .live-status {
+        display: inline-flex; align-items: center; gap: 6px; font-size: 0.66rem; font-weight: 700;
+        text-transform: uppercase; letter-spacing: 0.04em; border-radius: 999px; padding: 3px 9px;
+        border: 1px solid var(--border); color: var(--muted-foreground); background: var(--card);
+    }
+    .live-status.live { color: var(--success); background: #f0fdf4; border-color: #bbf7d0; }
+    .live-status.error { color: var(--destructive); }
+    .stage-card { margin-top: 10px; }
+    .stage-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+    .stage-last { display: flex; align-items: center; gap: 10px; min-height: 42px; }
+    .live-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+    .live-item {
+        display: flex; gap: 10px; align-items: center; padding: 6px; cursor: pointer;
+        border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--card);
+    }
+    .live-item:hover, .live-item.selected { border-color: var(--z-violet-500); }
+    .live-item .live-screen { width: 112px; flex-shrink: 0; border-radius: var(--radius-md); }
+    .live-item .live-fallback { font-size: 0.6rem; padding: 4px; }
+    .live-item-info { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+    .live-item-name { font-weight: 600; font-size: 0.8rem; color: var(--foreground); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    @media (max-width: 767px) {
+        .live-area.multi .live-layout { grid-template-columns: minmax(0, 1fr); }
+    }
+
     .ev-pagination { display: flex; align-items: center; justify-content: center; gap: 10px; margin-top: 14px; }
     .ev-pagination span { font-size: 0.74rem; color: var(--muted-foreground); }
     .ev-pagination button { font-size: 0.72rem; padding: 5px 10px; }
@@ -78,6 +118,53 @@
 {% endblock %}
 
 {% block content %}
+{% if terminals %}
+{% set first = terminals[0] %}
+<section class="panel live-area {{ 'multi' if terminals|length > 1 else 'single' }}" id="liveArea">
+    <div class="panel-header">
+        <span class="panel-title panel-title-row">{{ icons.scan_face() }}Terminais faciais</span>
+        <span class="panel-sub">Vídeo ao vivo e abertura remota</span>
+    </div>
+    <div class="live-layout">
+        <div class="live-stage">
+            <div class="live-screen">
+                <video id="stageVideo" autoplay muted playsinline{% if not first.live %} hidden{% endif %}></video>
+                <div id="stageFallback" class="live-fallback"{% if first.live %} hidden{% endif %}>
+                    <img id="stageFallbackImg" alt="" hidden>
+                    <span class="fallback-msg" id="stageFallbackMsg">Vídeo indisponível{% if first.reason %} ({{ first.reason }}){% endif %}</span>
+                </div>
+            </div>
+            <div id="terminalGrid">
+                <div class="door-card stage-card" data-terminal="{{ first.id }}">
+                    <div class="stage-head">
+                        <span class="door-name" id="stageName">{{ first.name }}</span>
+                        <span class="live-status{% if not first.live %} error{% endif %}" id="stageStatus">{{ 'Conectando' if first.live else 'Vídeo indisponível' }}</span>
+                    </div>
+                    <div class="stage-last" id="stageLast"><span class="door-hint">Sem reconhecimento recente.</span></div>
+                    <button type="button" class="btn-open" data-action="open-terminal">{{ icons.key_round(15) }}Abrir porta</button>
+                    <div class="door-msg"></div>
+                </div>
+            </div>
+        </div>
+        {% if terminals|length > 1 %}
+        <ul class="live-list" id="liveList">
+            {% for t in terminals %}
+            <li class="live-item{% if loop.first %} selected{% endif %}" data-terminal-id="{{ t.id }}">
+                <div class="live-screen">
+                    <video autoplay muted playsinline{% if not t.live %} hidden{% endif %}></video>
+                    <div class="live-fallback"{% if t.live %} hidden{% endif %}><span class="fallback-msg">Vídeo indisponível</span></div>
+                </div>
+                <div class="live-item-info">
+                    <span class="live-item-name">{{ t.name }}</span>
+                    <span class="live-status{% if not t.live %} error{% endif %}">{{ 'Conectando' if t.live else 'Indisponível' }}</span>
+                </div>
+            </li>
+            {% endfor %}
+        </ul>
+        {% endif %}
+    </div>
+</section>
+{% endif %}
 <div class="content-grid two-col">
     <section class="column">
         <div class="panel">
@@ -101,30 +188,6 @@
             </div>
             {% if not relays %}
             <p class="empty-hint">Nenhuma porta liberada pra esse usuário.</p>
-            {% endif %}
-        </div>
-
-        <div class="panel">
-            <div class="panel-header">
-                <span class="panel-title panel-title-row">{{ icons.scan_face() }}Terminais faciais</span>
-                <span class="panel-sub">Hikvision &amp; Intelbras</span>
-            </div>
-            <p class="panel-desc tight">Abertura remota direto no terminal, sem depender do ZAccess estar no ar.</p>
-            <div class="door-grid" id="terminalGrid">
-                {% for t in terminals %}
-                <div class="door-card" data-terminal="{{ t.id }}">
-                    <div class="door-card-head">
-                        <span class="door-icon">{{ icons.scan_face() }}</span>
-                        <span class="door-name">{{ t.name or t.host }}</span>
-                    </div>
-                    <span class="door-hint">{{ t.host }}</span>
-                    <button type="button" class="btn-open" data-action="open-terminal">{{ icons.key_round(15) }}Abrir porta</button>
-                    <div class="door-msg"></div>
-                </div>
-                {% endfor %}
-            </div>
-            {% if not terminals %}
-            <p class="empty-hint">Nenhum terminal facial liberado pra esse usuário.</p>
             {% endif %}
         </div>
 
@@ -198,6 +261,7 @@
 {% endblock %}
 
 {% block extra_body %}
+<script src="{{ url_for('static', filename='live-player.js') }}"></script>
 <script>
 (function() {
     function escapeHtml(s) {
@@ -244,6 +308,121 @@
     bindOpenButtons('relayGrid', function(card) { return '/api/cockpit/relays/' + encodeURIComponent(card.dataset.relay) + '/open'; });
     bindOpenButtons('terminalGrid', function(card) { return '/api/cockpit/face-terminals/' + encodeURIComponent(card.dataset.terminal) + '/open'; });
     bindOpenButtons('antennaGrid', function(card) { return '/api/cockpit/vehicle-antennas/' + encodeURIComponent(card.dataset.antenna) + '/open-gate'; });
+
+    // --- terminais faciais: destaque com vídeo ao vivo + lista lateral ---
+    var liveTerminals = {{ terminals|tojson }};
+    var STAGE_KEY = 'zapy.cockpit.terminal';
+    var stageVideo = document.getElementById('stageVideo');
+    var stageFallback = document.getElementById('stageFallback');
+    var stageFallbackImg = document.getElementById('stageFallbackImg');
+    var stageFallbackMsg = document.getElementById('stageFallbackMsg');
+    var stageStatus = document.getElementById('stageStatus');
+    var stageCard = document.querySelector('.stage-card');
+    var stageLast = document.getElementById('stageLast');
+    var stagePlayer = null;
+    var stageTerminal = null;
+    var lastPhotoUrl = null;
+
+    function liveWsUrl(id) { return '/ws/cockpit/face-terminals/' + encodeURIComponent(id) + '/live'; }
+
+    function setStatus(el, state, short) {
+        el.classList.toggle('live', state === 'live');
+        el.classList.toggle('error', state === 'error');
+        el.textContent = state === 'live' ? 'Ao vivo' : (state === 'connecting' ? 'Conectando' : (short ? 'Indisponível' : 'Vídeo indisponível'));
+    }
+
+    function showStageFallback(reason) {
+        stageVideo.hidden = true;
+        stageFallback.hidden = false;
+        stageFallbackMsg.textContent = 'Vídeo indisponível' + (reason ? ' (' + reason + ')' : '');
+        stageFallbackImg.hidden = !lastPhotoUrl;
+        if (lastPhotoUrl) stageFallbackImg.src = lastPhotoUrl;
+    }
+
+    function loadLastEvent() {
+        if (!stageTerminal) return;
+        var id = stageTerminal.id;
+        fetch('/api/events?terminal=' + encodeURIComponent(id) + '&pageSize=1')
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+                if (!stageTerminal || stageTerminal.id !== id) return;
+                var e = (data.events || [])[0];
+                if (!e) {
+                    lastPhotoUrl = null;
+                    stageLast.innerHTML = '<span class="door-hint">Sem reconhecimento recente.</span>';
+                } else {
+                    lastPhotoUrl = e.hasPhoto ? '/api/events/' + encodeURIComponent(e.dedupeKey) + '/photo' : null;
+                    stageLast.innerHTML =
+                        (lastPhotoUrl ? '<img class="event-photo" src="' + lastPhotoUrl + '" alt="">' : '<div class="event-photo placeholder">?</div>') +
+                        '<div class="event-info"><div class="event-name">' + escapeHtml(e.name || e.employeeNo || 'Desconhecido') + '</div>' +
+                        '<div class="event-meta">' + escapeHtml(fmtTime(e.time)) + ' · ' + (e.success ? 'Liberado' : 'Negado') + '</div></div>';
+                }
+                if (!stageFallback.hidden) {
+                    stageFallbackImg.hidden = !lastPhotoUrl;
+                    if (lastPhotoUrl) stageFallbackImg.src = lastPhotoUrl;
+                }
+            })
+            .catch(function() {});
+    }
+
+    function showStage(t) {
+        if (stagePlayer) { stagePlayer.stop(); stagePlayer = null; }
+        stageTerminal = t;
+        lastPhotoUrl = null;
+        stageCard.dataset.terminal = t.id;
+        stageCard.querySelector('.door-msg').textContent = '';
+        document.getElementById('stageName').textContent = t.name;
+        stageLast.innerHTML = '<span class="door-hint">Sem reconhecimento recente.</span>';
+        if (t.live && window.LivePlayer) {
+            stageVideo.hidden = false;
+            stageFallback.hidden = true;
+            setStatus(stageStatus, 'connecting');
+            stagePlayer = new LivePlayer(stageVideo, liveWsUrl(t.id), {
+                onStatus: function(state, detail) {
+                    setStatus(stageStatus, state);
+                    if (state === 'error') showStageFallback(detail);
+                    else { stageVideo.hidden = false; stageFallback.hidden = true; }
+                }
+            });
+            stagePlayer.start();
+        } else {
+            setStatus(stageStatus, 'error');
+            showStageFallback(t.reason);
+        }
+        document.querySelectorAll('.live-item').forEach(function(li) {
+            li.classList.toggle('selected', li.dataset.terminalId === t.id);
+        });
+        loadLastEvent();
+    }
+
+    if (liveTerminals.length) {
+        var chosen = null;
+        try { chosen = localStorage.getItem(STAGE_KEY); } catch (e) { /* storage bloqueado */ }
+        var initial = liveTerminals.filter(function(t) { return t.id === chosen; })[0] || liveTerminals[0];
+        showStage(initial);
+        setInterval(loadLastEvent, 15000);
+
+        document.querySelectorAll('.live-item').forEach(function(li) {
+            var t = liveTerminals.filter(function(x) { return x.id === li.dataset.terminalId; })[0];
+            if (!t) return;
+            var status = li.querySelector('.live-status');
+            var video = li.querySelector('video');
+            var fallback = li.querySelector('.live-fallback');
+            if (t.live && window.LivePlayer) {
+                new LivePlayer(video, liveWsUrl(t.id), {
+                    onStatus: function(state) {
+                        setStatus(status, state, true);
+                        video.hidden = state === 'error';
+                        fallback.hidden = state !== 'error';
+                    }
+                }).start();
+            }
+            li.addEventListener('click', function() {
+                try { localStorage.setItem(STAGE_KEY, t.id); } catch (e) { /* storage bloqueado */ }
+                showStage(t);
+            });
+        });
+    }
 
     // --- eventos recentes (mesmo padrão de events.html) ---
     var container = document.getElementById('eventsList');

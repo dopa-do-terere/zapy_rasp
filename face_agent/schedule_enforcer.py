@@ -81,14 +81,20 @@ def _to_minutes(hhmm: str) -> int:
 
 
 def enforce_schedule(client, store, terminal_id: str, terminal_name: str, now: Optional[datetime] = None,
-                     on_enrolled: Optional[Callable[[str, str], None]] = None) -> dict:
+                     on_enrolled: Optional[Callable[[str, str], bool]] = None) -> dict:
     """Passa pelo roster local do terminal e corrige o estado real (enrolado/
     removido) pra bater com o horário permitido agora. Só mexe em quem tem
     horário restrito (agenda semanal ou validade por data) E cujo estado diverge do
     esperado; erro de uma pessoa não trava as outras. Validade expirada tira do
     terminal E do roster local, e agenda o purge das fotos de evento.
     `on_enrolled(person_id, terminal_id)` é chamado quando entra na janela alguém
-    com ack de cadastro pendente (ver face_enroll em zaccess_client.py)."""
+    com ack de cadastro pendente (ver face_enroll em zaccess_client.py); retorna True
+    se o ack saiu. Só aí o pendente é limpo — senão tenta de novo a cada ciclo."""
+
+    def ack_pending(entry) -> None:
+        if entry.pending_ack_person_id and on_enrolled and on_enrolled(entry.pending_ack_person_id, terminal_id):
+            store.clear_pending_ack(terminal_id, entry.employee_no)
+
     entries = store.list_by_terminal(terminal_id)
     restricted = [
         e for e in entries
@@ -116,6 +122,11 @@ def enforce_schedule(client, store, terminal_id: str, terminal_name: str, now: O
 
         should_be_enrolled = is_within_schedule(entry.access_schedule, now)
         if should_be_enrolled == entry.enrolled:
+            if should_be_enrolled and entry.pending_ack_person_id:
+                try:
+                    ack_pending(entry)
+                except Exception:
+                    logger.exception("accessSchedule: falha ao reenviar ack de cadastro (%s)", ctx)
             continue
 
         try:
@@ -124,10 +135,7 @@ def enforce_schedule(client, store, terminal_id: str, terminal_name: str, now: O
                 store.set_enrolled(terminal_id, entry.employee_no, True)
                 result["enrolled"] += 1
                 logger.info("accessSchedule: dentro da janela permitida, face liberada no terminal - %s", ctx)
-                if entry.pending_ack_person_id:
-                    store.clear_pending_ack(terminal_id, entry.employee_no)
-                    if on_enrolled:
-                        on_enrolled(entry.pending_ack_person_id, terminal_id)
+                ack_pending(entry)
             else:
                 client.delete_user_info(entry.employee_no)
                 store.set_enrolled(terminal_id, entry.employee_no, False)

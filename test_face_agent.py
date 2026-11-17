@@ -5,6 +5,7 @@ Hikvision, circuit breaker de auth). Rodar: python -m unittest test_face_agent -
 """
 import base64
 import os
+import sqlite3
 import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
@@ -970,6 +971,49 @@ class LocalStoreTest(unittest.TestCase):
         self.assertIsNotNone(self.store.get_event_picture("e2"))
         self.assertIsNotNone(self.store.get_event_picture("e3"))
 
+    def test_purge_pictures_incremental_vacuum_empties_freelist(self):
+        for i in range(20):
+            self._add_event(f"big{i}", 100, os.urandom(50_000))
+        self.store.purge_pictures()
+        self.assertEqual(self.store._conn.execute("PRAGMA freelist_count").fetchone()[0], 0)
+
+    def test_upsert_roster_preserves_enrolled(self):
+        self.store.upsert_roster("t1", "9", "Convidado", JPEG, None)
+        self.store.set_enrolled("t1", "9", True)
+        self.store.upsert_roster("t1", "9", "Convidado", JPEG, {"validUntil": "2026-03-01T00:00:00Z"})
+        self.assertTrue(self.store.list_by_terminal("t1")[0].enrolled)
+        self.store.upsert_roster("t1", "10", "Novo", JPEG, None)
+        self.assertFalse([e for e in self.store.list_by_terminal("t1") if e.employee_no == "10"][0].enrolled)
+
+    def test_vacuum_migration_failure_does_not_block_startup(self):
+        real_connect = sqlite3.connect
+
+        class VacuumFails:
+            def __init__(self, conn):
+                self._c = conn
+
+            def execute(self, sql, *args):
+                if sql == "VACUUM":
+                    raise sqlite3.OperationalError("database or disk is full")
+                return self._c.execute(sql, *args)
+
+            def __getattr__(self, name):
+                return getattr(self._c, name)
+
+        fd, path = tempfile.mkstemp(suffix=".sqlite3")
+        os.close(fd)
+        try:
+            with patch("face_agent.local_store.sqlite3.connect", lambda *a, **kw: VacuumFails(real_connect(*a, **kw))):
+                with self.assertLogs("face_agent.local_store", "WARNING"):
+                    store = LocalStore(path)
+            store.upsert_roster("t1", "1", "A", JPEG, None)
+            self.assertEqual(len(store.list_by_terminal("t1")), 1)
+            store.close()
+        finally:
+            for suffix in ("", "-wal", "-shm"):
+                if os.path.exists(path + suffix):
+                    os.remove(path + suffix)
+
     def test_roster_pending_ack_set_and_clear(self):
         self.store.upsert_roster("t1", "9", "Convidado", JPEG, {"validFrom": "2026-03-11T00:00:00Z"}, pending_ack_person_id="p9")
         self.assertEqual(self.store.list_by_terminal("t1")[0].pending_ack_person_id, "p9")
@@ -1265,6 +1309,36 @@ class ScheduleValidityTest(unittest.TestCase):
         store.list_by_terminal.return_value = [self._entry(schedule, enrolled=True)]
         enforce_schedule(client, store, "t1", "T1", now=inside, on_enrolled=on_enrolled)
         on_enrolled.assert_called_once()
+        client.enroll_face.assert_called_once()
+
+    def test_enforce_enrolled_with_pending_before_window_is_removed(self):
+        store, client = MagicMock(), MagicMock()
+        schedule = {"enabled": False, "validFrom": "2026-03-11T00:00:00Z"}
+        store.list_by_terminal.return_value = [self._entry(schedule, enrolled=True, pending="p9")]
+        result = enforce_schedule(client, store, "t1", "T1", now=self.NOW, on_enrolled=MagicMock())
+        self.assertEqual(result["removed"], 1)
+        client.delete_user_info.assert_called_once_with("9")
+
+    def test_enforce_pending_ack_kept_until_emitted(self):
+        schedule = {"enabled": False, "validFrom": "2026-03-01T00:00:00Z"}
+        store, client = MagicMock(), MagicMock()
+        on_enrolled = MagicMock(return_value=False)  # socket offline
+        store.list_by_terminal.return_value = [self._entry(schedule, enrolled=False, pending="p9")]
+
+        enforce_schedule(client, store, "t1", "T1", now=self.NOW, on_enrolled=on_enrolled)
+        client.enroll_face.assert_called_once()
+        on_enrolled.assert_called_once_with("p9", "t1")
+        store.clear_pending_ack.assert_not_called()
+
+        # próximo ciclo: já enrolado, ainda pendente -> reenvia ack sem novo enroll
+        store.list_by_terminal.return_value = [self._entry(schedule, enrolled=True, pending="p9")]
+        enforce_schedule(client, store, "t1", "T1", now=self.NOW, on_enrolled=on_enrolled)
+        self.assertEqual(on_enrolled.call_count, 2)
+        store.clear_pending_ack.assert_not_called()
+
+        on_enrolled.return_value = True
+        enforce_schedule(client, store, "t1", "T1", now=self.NOW, on_enrolled=on_enrolled)
+        store.clear_pending_ack.assert_called_once_with("t1", "9")
         client.enroll_face.assert_called_once()
 
     def test_enforce_expired_removes_from_terminal_and_roster_and_schedules_purge(self):

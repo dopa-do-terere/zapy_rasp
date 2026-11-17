@@ -8,12 +8,15 @@ nuvem estar no ar — mesmo racional do RosterStore/PollCursorStore do z-edu
 SQLite puro em vez de better-sqlite3.
 """
 import json
+import logging
 import os
 import sqlite3
 import threading
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "face_agent.sqlite3")
 
@@ -165,8 +168,13 @@ class LocalStore:
             # ponytail: migração única pra INCREMENTAL (purge_pictures devolve o espaço com
             # incremental_vacuum). O VACUUM precisa de espaço livre ~ tamanho do banco; banco
             # novo é instantâneo.
-            self._conn.execute("PRAGMA auto_vacuum=INCREMENTAL")
-            self._conn.execute("VACUUM")
+            # Falha (disco cheio, banco travado) não pode impedir o zapy de subir: segue sem
+            # migrar e tenta de novo no próximo start.
+            try:
+                self._conn.execute("PRAGMA auto_vacuum=INCREMENTAL")
+                self._conn.execute("VACUUM")
+            except sqlite3.Error as e:
+                logger.warning("LocalStore: migração auto_vacuum=INCREMENTAL falhou, seguindo sem - %s", e)
         self._conn.execute("PRAGMA journal_mode=WAL")
         _ensure_card_roster_schema(self._conn)
         self._conn.executescript(_SCHEMA)
@@ -375,7 +383,8 @@ class LocalStore:
                 self._conn.executemany("UPDATE events SET picture = NULL WHERE dedupe_key = ?", over_cap)
 
             self._conn.commit()
-            self._conn.execute("PRAGMA incremental_vacuum")
+            # fetchall: sem consumir o cursor o sqlite3 do Python só libera 1 página.
+            self._conn.execute("PRAGMA incremental_vacuum").fetchall()
         return {"aged": aged, "guests": guests, "over_cap": len(over_cap)}
 
     # Nome do roster (Zapy/ZAccess) tem prioridade — é a identidade "oficial" sincronizada;

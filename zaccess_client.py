@@ -500,15 +500,18 @@ def run_zaccess_client(
                     pass
             logger.info("ZAccess: relé canal %s -> %s", channel, state)
 
-        def _emit_enroll_ack(person_id: str, terminal_id: str, status: str, error: str | None = None):
+        def _emit_enroll_ack(person_id: str, terminal_id: str, status: str, error: str | None = None) -> bool:
+            """True só se o ack foi de fato emitido (socket conectado e sem erro)."""
             try:
                 if sio.connected:
                     payload = {"personId": person_id, "terminalId": terminal_id, "status": status}
                     if error:
                         payload["error"] = error
                     sio.emit("face:enroll-ack", payload, namespace=NAMESPACE)
+                    return True
             except Exception:
                 pass
+            return False
 
         def _emit_card_ack(person_id: str, terminal_id: str, card_no: str, status: str, error: str | None = None):
             """Canal próprio (card:enroll-ack) — face e cartão são credenciais
@@ -559,11 +562,16 @@ def run_zaccess_client(
                     validity = validity_state(schedule)
                     if validity == "expired":
                         logger.info("ZAccess: face:enroll de %s ignorado no terminal %s - validade expirada", name, terminal_id)
+                        # Já no roster: grava o schedule novo (preserva enrolled) pro
+                        # schedule_enforcer tirar do device e agendar o purge no próximo ciclo.
+                        if local_store.get_roster_name(terminal_id, employee_no) is not None:
+                            local_store.upsert_roster(terminal_id, employee_no, name, jpeg, schedule)
                         _emit_enroll_ack(person_id, terminal_id, "failed", "validade do acesso expirada")
                         return
                     if validity != "none" and not is_within_schedule(schedule):
+                        # Sem set_enrolled(False): upsert preserva enrolled de quem já existe,
+                        # então o schedule_enforcer tira do device quem estava cadastrado.
                         local_store.upsert_roster(terminal_id, employee_no, name, jpeg, schedule, pending_ack_person_id=person_id)
-                        local_store.set_enrolled(terminal_id, employee_no, False)
                         logger.info("ZAccess: rosto de %s agendado no terminal %s (fora da janela)", name, terminal_id)
                         _emit_enroll_ack(person_id, terminal_id, "scheduled")
                         return

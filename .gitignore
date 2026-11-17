@@ -45,5 +45,8 @@ users.json
 # Chave de sessão Flask gerada automaticamente no primeiro start (ver app.py)
 .secret_key
 
+# Binários baixados pelo install (go2rtc do vídeo ao vivo)
+bin/
+
 # Roster local do face_agent (SQLite) — fotos + agenda, estado local do dispositivo
 face_agent.sqlite3*

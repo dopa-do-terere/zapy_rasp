@@ -74,6 +74,46 @@ try {
     & $VenvPip install -q --upgrade pip
     & $VenvPip install -q -r requirements.txt
     if ($LASTEXITCODE -ne 0) { Die "pip install falhou (código $LASTEXITCODE)." }
+
+    # go2rtc (vídeo ao vivo no Cockpit) — opcional: falhou, avisa e segue sem vídeo.
+    # SHA-256 do release oficial (mesma tabela do install.sh — o teste
+    # Go2rtcInstallScriptsTest confere que não divergem).
+    $Go2rtcVersion = "1.9.4"
+    $Go2rtcSha256 = @{
+        "go2rtc_linux_amd64" = "8d86510e64e0deadee40d550d46323ddec9f62e14cec56de3a9df0f2f7fe9ada"
+        "go2rtc_linux_arm" = "a40459ab24d3ce5e329226adc905e5192dffccbb53d42de06d3ee3f2ebf2ebc6"
+        "go2rtc_linux_arm64" = "ebea4cf3a0bc3a12190ebba1f2c4b3c8cf4aac099fadb4cd50a669429b074f1c"
+        "go2rtc_win64.zip" = "167b64f12cf0ecb3714d2911a4a92c2809c37d43d9f1dd02a0575b6488107816"
+    }
+    Write-Step "instalando go2rtc $Go2rtcVersion (vídeo ao vivo)"
+    $BinDir = Join-Path $InstallDir "bin"
+    $Go2rtcExe = Join-Path $BinDir "go2rtc.exe"
+    $Go2rtcVersionFile = Join-Path $BinDir "go2rtc.version"
+    if ((Test-Path $Go2rtcExe) -and (Test-Path $Go2rtcVersionFile) -and ((Get-Content $Go2rtcVersionFile -Raw).Trim() -eq $Go2rtcVersion)) {
+        Write-Host "go2rtc $Go2rtcVersion já instalado."
+    } else {
+        $TmpZip = Join-Path $env:TEMP "go2rtc_win64.zip"
+        $TmpDir = Join-Path $env:TEMP "go2rtc_win64"
+        try {
+            Invoke-WebRequest -UseBasicParsing -Uri "https://github.com/AlexxIT/go2rtc/releases/download/v$Go2rtcVersion/go2rtc_win64.zip" -OutFile $TmpZip
+            $actual = (Get-FileHash -Algorithm SHA256 $TmpZip).Hash.ToLower()
+            if ($actual -ne $Go2rtcSha256["go2rtc_win64.zip"]) {
+                Write-Warning "SHA-256 do go2rtc não confere — NÃO instalado (vídeo ao vivo indisponível)."
+            } else {
+                if (Test-Path $TmpDir) { Remove-Item -Recurse -Force $TmpDir }
+                Expand-Archive -Path $TmpZip -DestinationPath $TmpDir -Force
+                New-Item -ItemType Directory -Force -Path $BinDir | Out-Null
+                Move-Item -Force (Join-Path $TmpDir "go2rtc.exe") $Go2rtcExe
+                Set-Content -Path $Go2rtcVersionFile -Value $Go2rtcVersion
+                Write-Host "go2rtc $Go2rtcVersion instalado em $Go2rtcExe"
+            }
+        } catch {
+            Write-Warning "download/instalação do go2rtc falhou — vídeo ao vivo indisponível ($($_.Exception.Message))."
+        } finally {
+            Remove-Item -Force $TmpZip -ErrorAction SilentlyContinue
+            Remove-Item -Recurse -Force $TmpDir -ErrorAction SilentlyContinue
+        }
+    }
 } finally {
     Pop-Location
 }

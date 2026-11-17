@@ -49,6 +49,60 @@ if [[ "$(id -u)" -ne 0 ]]; then
   echo "[zapy] Dependências instaladas."
 fi
 
+# --- go2rtc (vídeo ao vivo no Cockpit) — opcional: sem ele o zapy funciona, só sem vídeo ---
+GO2RTC_VERSION="1.9.4"
+
+# SHA-256 do release oficial v1.9.4 (mesma tabela em scripts/install-windows.ps1 — o
+# teste Go2rtcInstallScriptsTest confere que não divergem).
+go2rtc_sha256() {
+  case "$1" in
+    go2rtc_linux_amd64) echo "8d86510e64e0deadee40d550d46323ddec9f62e14cec56de3a9df0f2f7fe9ada" ;;
+    go2rtc_linux_arm) echo "a40459ab24d3ce5e329226adc905e5192dffccbb53d42de06d3ee3f2ebf2ebc6" ;;
+    go2rtc_linux_arm64) echo "ebea4cf3a0bc3a12190ebba1f2c4b3c8cf4aac099fadb4cd50a669429b074f1c" ;;
+    go2rtc_win64.zip) echo "167b64f12cf0ecb3714d2911a4a92c2809c37d43d9f1dd02a0575b6488107816" ;;
+  esac
+}
+
+install_go2rtc() {
+  local bin_dir="$INSTALL_DIR/bin" asset expected tmp
+  if [[ -x "$bin_dir/go2rtc" ]] && [[ "$(cat "$bin_dir/go2rtc.version" 2>/dev/null)" == "$GO2RTC_VERSION" ]]; then
+    echo "[zapy] go2rtc $GO2RTC_VERSION já instalado."
+    return 0
+  fi
+  case "$(uname -m)" in
+    aarch64|arm64) asset="go2rtc_linux_arm64" ;;
+    armv7l) asset="go2rtc_linux_arm" ;;
+    armv6l)
+      echo "[zapy] AVISO: armv6l não suportado pelo vídeo ao vivo — go2rtc não instalado (o resto do zapy funciona)."
+      return 0 ;;
+    x86_64) asset="go2rtc_linux_amd64" ;;
+    *)
+      echo "[zapy] AVISO: arquitetura $(uname -m) sem go2rtc — vídeo ao vivo indisponível."
+      return 0 ;;
+  esac
+  expected="$(go2rtc_sha256 "$asset")"
+  tmp="$(mktemp)"
+  local url="https://github.com/AlexxIT/go2rtc/releases/download/v$GO2RTC_VERSION/$asset"
+  echo "[zapy] Baixando go2rtc $GO2RTC_VERSION ($asset)..."
+  if command -v curl &>/dev/null; then
+    curl -fsSL -o "$tmp" "$url" || { rm -f "$tmp"; echo "[zapy] AVISO: download do go2rtc falhou — vídeo ao vivo indisponível."; return 1; }
+  else
+    wget -q -O "$tmp" "$url" || { rm -f "$tmp"; echo "[zapy] AVISO: download do go2rtc falhou — vídeo ao vivo indisponível."; return 1; }
+  fi
+  if ! echo "$expected  $tmp" | sha256sum -c - &>/dev/null; then
+    rm -f "$tmp"
+    echo "[zapy] AVISO: SHA-256 do go2rtc não confere — NÃO instalado (vídeo ao vivo indisponível)."
+    return 1
+  fi
+  mkdir -p "$bin_dir"
+  mv "$tmp" "$bin_dir/go2rtc"
+  chmod 755 "$bin_dir/go2rtc"
+  echo "$GO2RTC_VERSION" > "$bin_dir/go2rtc.version"
+  echo "[zapy] go2rtc $GO2RTC_VERSION instalado em $bin_dir/go2rtc."
+}
+
+install_go2rtc || true
+
 if $NO_SERVICE; then
   echo "[zapy] Concluído (sem serviço). Para rodar: $INSTALL_DIR/.venv/bin/python app.py"
   exit 0

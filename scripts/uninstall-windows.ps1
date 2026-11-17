@@ -4,7 +4,7 @@
 #
 # Uso (PowerShell como Administrador):
 #   .\scripts\uninstall-windows.ps1 [-Purge]
-#   -Purge  remove também o ambiente virtual (.venv)
+#   -Purge  remove também o ambiente virtual (.venv) e bin\ (go2rtc)
 
 param(
     [switch]$Purge
@@ -38,6 +38,11 @@ if ($Purge) {
         Write-Step "removendo .venv"
         Remove-Item -Recurse -Force $VenvDir
         Write-Host ".venv removido."
+    }
+    $BinDir = Join-Path $InstallDir "bin"
+    if (Test-Path $BinDir) {
+        Remove-Item -Recurse -Force $BinDir
+        Write-Host "bin\ (go2rtc) removido."
     }
 }
 

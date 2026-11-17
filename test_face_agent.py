@@ -2065,5 +2065,34 @@ class CockpitLiveRouteTest(unittest.TestCase):
         self.assertIn(f'data-live-terminal="{self.terminal["id"]}"', html)
         self.assertEqual(html.count("data-live-terminal="), 1)
 
+
+class Go2rtcInstallScriptsTest(unittest.TestCase):
+    ROOT = os.path.dirname(os.path.abspath(__file__))
+
+    def _hashes(self, rel_path):
+        import re
+        with open(os.path.join(self.ROOT, rel_path), encoding="utf-8") as f:
+            text = f.read()
+        found = {}
+        for line in text.splitlines():
+            sha = re.search(r"\b[0-9a-f]{64}\b", line)
+            asset = re.search(r"go2rtc_[a-z0-9_]+(?:\.zip)?", line)
+            if sha and asset:
+                found[asset.group(0)] = sha.group(0)
+        return found, text
+
+    def test_sha256_same_in_install_sh_and_ps1(self):
+        sh, sh_text = self._hashes("install.sh")
+        ps1, ps1_text = self._hashes(os.path.join("scripts", "install-windows.ps1"))
+        self.assertEqual(set(sh), {"go2rtc_linux_amd64", "go2rtc_linux_arm", "go2rtc_linux_arm64", "go2rtc_win64.zip"})
+        self.assertEqual(sh, ps1)
+        self.assertIn('GO2RTC_VERSION="1.9.4"', sh_text)
+        self.assertIn('$Go2rtcVersion = "1.9.4"', ps1_text)
+
+    def test_install_sh_syntax(self):
+        import subprocess
+        res = subprocess.run(["bash", "-n", os.path.join(self.ROOT, "install.sh")], capture_output=True, text=True)
+        self.assertEqual(res.returncode, 0, res.stderr)
+
 if __name__ == "__main__":
     unittest.main()

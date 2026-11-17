@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Zapy – Desinstalação: para e remove o serviço systemd; opcionalmente remove .venv
 # Uso: ./uninstall.sh [--purge]
-#   --purge  remove também o ambiente virtual (.venv)
+#   --purge  remove também o ambiente virtual (.venv) e bin/ (go2rtc)
 
 set -e
 
@@ -14,7 +14,7 @@ for arg in "$@"; do
     -h|--help)
       echo "Uso: $0 [--purge]"
       echo "  Para e remove o serviço systemd."
-      echo "  --purge  remove também o diretório .venv"
+      echo "  --purge  remove também os diretórios .venv e bin/ (go2rtc)"
       exit 0
       ;;
   esac
@@ -48,6 +48,10 @@ if $PURGE && [[ -d "$INSTALL_DIR/.venv" ]]; then
   echo "[zapy] Removendo .venv..."
   rm -rf "$INSTALL_DIR/.venv"
   echo "[zapy] .venv removido."
+fi
+if $PURGE && [[ -d "$INSTALL_DIR/bin" ]]; then
+  rm -rf "$INSTALL_DIR/bin"
+  echo "[zapy] bin/ (go2rtc) removido."
 fi
 
 echo "[zapy] Desinstalação concluída."

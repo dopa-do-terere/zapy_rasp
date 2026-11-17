@@ -1537,6 +1537,57 @@ class IntelbrasEventsFetchTest(unittest.TestCase):
         self.assertEqual(events[0]["employee_no"], "123")
 
 
+class IntelbrasDoorlogNameTest(unittest.TestCase):
+    def _events(self, items):
+        client = MagicMock()
+        client.call.return_value = {"retcode": 0, "data": {"item": items}}
+        events, _ = fetch_intelbras_events_since(client, "t1", "in", PollCursor(terminal_id="t1", search_id="9"))
+        return events
+
+    def test_doorlog_name_becomes_device_name(self):
+        events = self._events([
+            {"ID": "10", "Date": "2026-01-01", "Time": "10:00:00", "Status": "Success", "UserID": "233669789", "Name": " Maria Souza "},
+        ])
+        self.assertEqual(events[0]["device_name"], "Maria Souza")
+
+    def test_system_or_empty_name_is_none(self):
+        events = self._events([
+            {"ID": "10", "Date": "2026-01-01", "Time": "10:00:00", "Status": "Success", "UserID": "1", "Name": "HTTPAPI"},
+            {"ID": "11", "Date": "2026-01-01", "Time": "10:00:01", "Status": "Success", "UserID": "2", "Name": " desconhecido "},
+            {"ID": "12", "Date": "2026-01-01", "Time": "10:00:02", "Status": "Success", "UserID": "3", "Name": "  "},
+            {"ID": "13", "Date": "2026-01-01", "Time": "10:00:03", "Status": "Success", "UserID": "4"},
+            # sem employee_no (falha): não carrega nome
+            {"ID": "14", "Date": "2026-01-01", "Time": "10:00:04", "Status": "Fail", "UserID": "Desconhecido", "Name": "Maria"},
+        ])
+        self.assertEqual([e["device_name"] for e in events], [None] * 5)
+
+
+class IntelbrasGetUserNameTest(unittest.TestCase):
+    def _client(self):
+        return IntelbrasClient(IntelbrasTerminal(host="10.0.0.1", port=80, username="admin", password="pw"))
+
+    @patch("face_agent.intelbras_client.requests.post")
+    def test_found(self, mock_post):
+        mock_post.return_value = MagicMock(status_code=200, json=lambda: {"retcode": 0, "data": {"item": [
+            {"UserID": "1", "Name": "Outro"}, {"UserID": "233669789", "Name": " Maria Souza "},
+        ]}})
+        self.assertEqual(self._client().get_user_name("233669789"), "Maria Souza")
+        self.assertEqual(mock_post.call_args.kwargs["json"]["target"], "user")
+        self.assertEqual(mock_post.call_args.kwargs["json"]["action"], "get")
+
+    @patch("face_agent.intelbras_client.requests.post")
+    def test_not_found(self, mock_post):
+        mock_post.return_value = MagicMock(status_code=200, json=lambda: {"retcode": 0, "data": {"item": [{"UserID": "1", "Name": "Outro"}]}})
+        self.assertIsNone(self._client().get_user_name("233669789"))
+
+    @patch("face_agent.intelbras_client.requests.post")
+    def test_error_returns_none_without_credentials_in_log(self, mock_post):
+        mock_post.side_effect = requests.ConnectionError("down")
+        with self.assertLogs("face_agent.intelbras_client", "WARNING") as logs:
+            self.assertIsNone(self._client().get_user_name("233669789"))
+        self.assertNotIn("pw", "".join(logs.output))
+
+
 class IntelbrasBioTEventsFetchTest(unittest.TestCase):
     def test_first_cycle_anchors_cursor_without_events(self):
         client = MagicMock()

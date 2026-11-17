@@ -272,6 +272,16 @@ def fetch_intelbras_events_since(client, terminal_id: str, direction: str, curso
     return events, next_cursor
 
 
+# Valores que o XPE põe em `Name` sem ser nome de pessoa (abertura via API, reconhecimento
+# que falhou) — comparados sem caixa/espaços.
+_SYSTEM_NAMES = {"httpapi", "desconhecido"}
+
+
+def _person_name(raw) -> Optional[str]:
+    name = raw.strip() if isinstance(raw, str) else ""
+    return name if name and name.lower() not in _SYSTEM_NAMES else None
+
+
 def _intelbras_doorlog_to_event(terminal_id: str, direction: str, item: dict) -> Optional[dict]:
     if not item.get("ID") or not item.get("Date") or not item.get("Time"):
         return None
@@ -293,11 +303,14 @@ def _intelbras_doorlog_to_event(terminal_id: str, direction: str, item: dict) ->
     # QUALQUER doorlog, inclusive acesso negado/desconhecido (exemplo oficial "Doorlog
     # Usuário não cadastrado e acesso negado" já traz o campo preenchido).
     picture_url = (item.get("Picture") or "").strip() or None
+    # `Name` = nome cadastrado no próprio device — mostra quem foi enrolado direto no
+    # terminal, fora do roster (mesmo papel do `name` do AcsEvent no Hikvision).
+    device_name = _person_name(item.get("Name")) if employee_no else None
     return {
         "dedupe_key": f"{terminal_id}:doorlog:{item['ID']}", "terminal_id": terminal_id,
         "employee_no": employee_no, "time": time, "direction": direction,
         "major_event_type": None, "minor_event_type": None, "success": success,
-        "source": "poll", "picture_url": picture_url, "raw": item,
+        "source": "poll", "picture_url": picture_url, "raw": item, "device_name": device_name,
     }
 
 

@@ -133,6 +133,17 @@ class IntelbrasClient:
                 return item
         return None
 
+    def get_user_name(self, employee_no: str) -> str | None:
+        """Nome cadastrado no device (user/get) — pra evento de quem foi enrolado direto no
+        terminal. Nunca lança: erro vira warning e None."""
+        try:
+            existing = self._find_existing_user(employee_no)
+        except Exception as e:
+            logger.warning("falha ao buscar nome do usuário %s no terminal: %s", employee_no, type(e).__name__)
+            return None
+        name = (existing or {}).get("Name")
+        return name.strip() or None if isinstance(name, str) else None
+
     def _upsert_credential(self, employee_no: str, name: str, build_credential) -> str:
         """Cria (ou atualiza) o usuário aplicando o que `build_credential(existing)` devolver
         (ex.: {"FaceImage": ...} ou {"CardCode": ...}) por cima do que já existe no device —

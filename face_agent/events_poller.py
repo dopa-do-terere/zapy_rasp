@@ -368,17 +368,24 @@ def _biot_record_to_event(terminal_id: str, item: dict) -> Optional[dict]:
     user_id = (item.get("UserID") or "").strip()
     employee_no = user_id if success and user_id else None
     picture_path = (item.get("URL") or "").strip() or None
+    # CardName = nome cadastrado no device, quando o firmware manda (Dahua costuma mandar).
+    device_name = _person_name(item.get("CardName")) if employee_no else None
     return {
         "dedupe_key": f"{terminal_id}:biot:{rec_no}", "terminal_id": terminal_id,
         "employee_no": employee_no, "time": time_str, "direction": _normalize_direction(item.get("Type")),
         "major_event_type": None, "minor_event_type": None, "success": success,
-        "source": "poll", "picture_url": picture_path, "raw": item,
+        "source": "poll", "picture_url": picture_path, "raw": item, "device_name": device_name,
     }
 
 
 # --- loop de poll por terminal ---
 
-def make_events_fetch(client, terminal_id: str):
+# Nome não encontrado no device é reconsultado depois disso (pessoa cadastrada depois
+# aparece); nome encontrado fica em cache pra sempre.
+_NAME_MISS_TTL_SECONDS = 600
+
+
+def make_events_fetch(client, terminal_id: str, clock=time.monotonic):
     """Monta o `fetch` do EventsPoller pro tipo de client — ou None se o terminal não
     é varrido por poll (Control iD manda evento por webhook). Hikvision usa AcsEvent;
     Intelbras XPE só tem doorlog; Intelbras Bio-T/SS usa recordFinder.cgi — três
@@ -399,11 +406,32 @@ def make_events_fetch(client, terminal_id: str):
     else:
         return None
 
+    get_user_name = getattr(client, "get_user_name", None)
+    # ponytail: cache sem limite de tamanho (poucos usuários por terminal).
+    names: dict = {}  # (terminal_id, employee_no) -> (nome | None, expira_em | None)
+
+    def resolve_name(employee_no: str):
+        key = (terminal_id, employee_no)
+        hit = names.get(key)
+        if hit and (hit[1] is None or clock() < hit[1]):
+            return hit[0]
+        try:
+            name = get_user_name(employee_no)
+        except Exception as e:
+            logger.warning("events_poller (%s): falha ao buscar nome de %s - %s", terminal_id, employee_no, type(e).__name__)
+            name = None
+        names[key] = (name, None if name else clock() + _NAME_MISS_TTL_SECONDS)
+        return name
+
     def fetch(cursor):
         events, next_cursor = fetch_raw(cursor)
         for event in events:
             url = event.get("picture_url")
             event["picture"] = client.fetch_picture(url) if url else None
+            # Pessoa enrolada direto no device (fora do roster) sem nome no evento: busca
+            # o nome no próprio terminal.
+            if get_user_name and event.get("employee_no") and not event.get("device_name"):
+                event["device_name"] = resolve_name(event["employee_no"])
         return events, next_cursor
 
     return fetch

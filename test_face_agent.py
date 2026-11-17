@@ -1784,5 +1784,82 @@ class LocalEventPollersTest(unittest.TestCase):
                 if os.path.exists(path + suffix):
                     os.remove(path + suffix)
 
+
+class EventsFetchNameCacheTest(unittest.TestCase):
+    def _event(self, key, employee_no="233669789", device_name=None):
+        return {"dedupe_key": key, "terminal_id": "t1", "employee_no": employee_no,
+                "time": datetime.now(_BR_TZ).isoformat(), "direction": "unknown", "success": True,
+                "source": "poll", "picture_url": None, "device_name": device_name}
+
+    def _fetch(self, batches, clock=None, name="Maria Souza"):
+        client = MagicMock(spec=IntelbrasClient)
+        client.get_user_name.return_value = name
+        cursor = PollCursor(terminal_id="t1")
+        fetch_patch = patch("face_agent.events_poller.fetch_intelbras_events_since",
+                            side_effect=[(b, cursor) for b in batches])
+        fetch_patch.start()
+        self.addCleanup(fetch_patch.stop)
+        kwargs = {"clock": clock} if clock else {}
+        return client, make_events_fetch(client, "t1", **kwargs), cursor
+
+    def test_same_user_resolved_once(self):
+        client, fetch, cursor = self._fetch([[self._event("a")], [self._event("b")]])
+        self.assertEqual(fetch(cursor)[0][0]["device_name"], "Maria Souza")
+        self.assertEqual(fetch(cursor)[0][0]["device_name"], "Maria Souza")
+        client.get_user_name.assert_called_once_with("233669789")
+
+    def test_missing_name_expires_after_ttl(self):
+        now = [1000.0]
+        client, fetch, cursor = self._fetch([[self._event("a")], [self._event("b")], [self._event("c")]],
+                                            clock=lambda: now[0], name=None)
+        self.assertIsNone(fetch(cursor)[0][0]["device_name"])
+        now[0] += 599
+        fetch(cursor)
+        self.assertEqual(client.get_user_name.call_count, 1)
+        now[0] += 2  # passou de 10 min
+        client.get_user_name.return_value = "Maria Souza"
+        self.assertEqual(fetch(cursor)[0][0]["device_name"], "Maria Souza")
+        self.assertEqual(client.get_user_name.call_count, 2)
+
+    def test_event_with_name_or_without_user_does_not_query(self):
+        client, fetch, cursor = self._fetch([[self._event("a", device_name="Do Doorlog"), self._event("b", employee_no=None)]])
+        events, _ = fetch(cursor)
+        self.assertEqual(events[0]["device_name"], "Do Doorlog")
+        client.get_user_name.assert_not_called()
+
+    def test_get_user_name_failure_does_not_break_fetch(self):
+        client, fetch, cursor = self._fetch([[self._event("a")]])
+        client.get_user_name.side_effect = RuntimeError("boom")
+        with self.assertLogs("face_agent.events_poller", "WARNING"):
+            events, _ = fetch(cursor)
+        self.assertEqual(len(events), 1)
+        self.assertIsNone(events[0]["device_name"])
+
+    def test_biot_card_name_becomes_device_name(self):
+        client = MagicMock()
+        client.fetch_access_records.return_value = [
+            {"RecNo": "10", "CreateTime": "1735732800", "ErrorCode": "0", "UserID": "123", "Type": "Entry", "CardName": " Joao "},
+            {"RecNo": "11", "CreateTime": "1735732900", "ErrorCode": "16", "UserID": "", "Type": "Entry", "CardName": "Joao"},
+        ]
+        events, _ = fetch_intelbras_biot_events_since(client, "t1", PollCursor(terminal_id="t1", search_id="9"))
+        self.assertEqual(events[0]["device_name"], "Joao")
+        self.assertIsNone(events[1]["device_name"])
+
+    def test_end_to_end_name_shows_in_query_events(self):
+        fd, path = tempfile.mkstemp(suffix=".sqlite3")
+        os.close(fd)
+        store = LocalStore(path)
+        try:
+            _, fetch, _ = self._fetch([[self._event("t1:doorlog:709")]])
+            poller = EventsPoller(store, "t1", fetch)
+            store.add_events(poller.poll_once())
+            events, _ = store.query_events()
+            self.assertEqual([(e.employee_no, e.name) for e in events], [("233669789", "Maria Souza")])
+        finally:
+            store.close()
+            for suffix in ("", "-wal", "-shm"):
+                if os.path.exists(path + suffix):
+                    os.remove(path + suffix)
+
 if __name__ == "__main__":
     unittest.main()

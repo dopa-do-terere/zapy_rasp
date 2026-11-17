@@ -22,6 +22,11 @@ DEFAULT_DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..",
 # cada add_events (nunca some antes da hora).
 EVENTS_RETENTION_DAYS = 365
 
+# Fotos de evento (LGPD + disco): somem antes da linha do evento. Por idade e por teto
+# de bytes somados — o que vencer primeiro (ver purge_pictures).
+PICTURE_RETENTION_DAYS = 90
+PICTURE_MAX_BYTES = 2 * 1024**3
+
 # `time` do evento sempre vem com -03:00 (Hikvision manda o relógio do próprio device;
 # Intelbras fixa -03:00 no code, ver intelbras_client.py) — mesmo offset aqui pra
 # comparação de string funcionar direito (ISO 8601 só ordena lexicograficamente quando
@@ -156,6 +161,12 @@ class LocalStore:
     def __init__(self, db_path: str = DEFAULT_DB_PATH):
         self._lock = threading.Lock()
         self._conn = sqlite3.connect(db_path, check_same_thread=False)
+        if self._conn.execute("PRAGMA auto_vacuum").fetchone()[0] != 2:
+            # ponytail: migração única pra INCREMENTAL (purge_pictures devolve o espaço com
+            # incremental_vacuum). O VACUUM precisa de espaço livre ~ tamanho do banco; banco
+            # novo é instantâneo.
+            self._conn.execute("PRAGMA auto_vacuum=INCREMENTAL")
+            self._conn.execute("VACUUM")
         self._conn.execute("PRAGMA journal_mode=WAL")
         _ensure_card_roster_schema(self._conn)
         self._conn.executescript(_SCHEMA)
@@ -324,6 +335,48 @@ class LocalStore:
             cutoff = (datetime.now(_BR_TZ) - timedelta(days=EVENTS_RETENTION_DAYS)).isoformat()
             self._conn.execute("DELETE FROM events WHERE time < ?", (cutoff,))
             self._conn.commit()
+
+    def purge_pictures(self, now: Optional[datetime] = None, max_bytes: int = PICTURE_MAX_BYTES) -> dict:
+        """Apaga só a foto (picture=NULL), nunca a linha do evento: (a) fotos mais velhas
+        que PICTURE_RETENTION_DAYS; (b) fotos de quem tem purge agendado e vencido
+        (validade expirada); (c) as mais antigas até a soma caber em max_bytes. Depois
+        devolve o espaço ao disco (incremental_vacuum)."""
+        now = now or datetime.now(_BR_TZ)
+        cutoff = (now.astimezone(_BR_TZ) - timedelta(days=PICTURE_RETENTION_DAYS)).isoformat()
+        now_utc = now.astimezone(timezone.utc).isoformat()
+        with self._lock:
+            aged = self._conn.execute(
+                "UPDATE events SET picture = NULL WHERE picture IS NOT NULL AND time < ?", (cutoff,)
+            ).rowcount
+
+            guests = 0
+            due = self._conn.execute(
+                "SELECT terminal_id, employee_no FROM picture_purge WHERE purge_after <= ?", (now_utc,)
+            ).fetchall()
+            for terminal_id, employee_no in due:
+                guests += self._conn.execute(
+                    "UPDATE events SET picture = NULL WHERE picture IS NOT NULL AND terminal_id = ? AND employee_no = ?",
+                    (terminal_id, employee_no),
+                ).rowcount
+                self._conn.execute(
+                    "DELETE FROM picture_purge WHERE terminal_id = ? AND employee_no = ?", (terminal_id, employee_no)
+                )
+
+            over_cap = []
+            excess = (self._conn.execute("SELECT SUM(length(picture)) FROM events").fetchone()[0] or 0) - max_bytes
+            if excess > 0:
+                for key, size in self._conn.execute(
+                    "SELECT dedupe_key, length(picture) FROM events WHERE picture IS NOT NULL ORDER BY time ASC"
+                ):
+                    over_cap.append((key,))
+                    excess -= size
+                    if excess <= 0:
+                        break
+                self._conn.executemany("UPDATE events SET picture = NULL WHERE dedupe_key = ?", over_cap)
+
+            self._conn.commit()
+            self._conn.execute("PRAGMA incremental_vacuum")
+        return {"aged": aged, "guests": guests, "over_cap": len(over_cap)}
 
     # Nome do roster (Zapy/ZAccess) tem prioridade — é a identidade "oficial" sincronizada;
     # cai pro nome que o próprio terminal já manda no evento (device_name, ex.: cardholder

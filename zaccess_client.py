@@ -146,6 +146,7 @@ HEARTBEAT_INTERVAL = 30  # telemetria periódica (liveness = ping nativo Socket.
 INPUT_PUSH_INTERVAL = 30 # backup: reenvio periódico; mudanças reais são enviadas na hora via callback
 FACE_TERMINAL_STATUS_INTERVAL = 60  # heartbeat de saúde dos terminais faciais
 SCHEDULE_ENFORCER_INTERVAL = 60     # confere agenda de horário do roster local
+PICTURE_PURGE_INTERVAL = 3600       # retenção de fotos de evento (local_store.purge_pictures)
 FACE_EVENTS_POLL_INTERVAL = 15      # poll de eventos de reconhecimento (face:identified)
 RECONNECT_DELAY = 5
 RECONNECT_MAX_DELAY = 120
@@ -1002,7 +1003,9 @@ def run_zaccess_client(
 
         def schedule_enforcer_loop():
             """Aplica a agenda de horário do roster local — funciona mesmo com a nuvem fora
-            do ar, porque só depende do que já foi persistido em enroll (ver face_enroll)."""
+            do ar, porque só depende do que já foi persistido em enroll (ver face_enroll).
+            De carona, roda a retenção de fotos de evento no máximo 1x por hora."""
+            last_purge = None
             while not schedule_stop.is_set():
                 if schedule_stop.wait(timeout=SCHEDULE_ENFORCER_INTERVAL):
                     break
@@ -1014,6 +1017,12 @@ def run_zaccess_client(
                         )
                     except Exception:
                         logger.exception("ZAccess: falha no schedule_enforcer do terminal %s", terminal_id)
+                if last_purge is None or time.monotonic() - last_purge >= PICTURE_PURGE_INTERVAL:
+                    last_purge = time.monotonic()
+                    try:
+                        logger.info("ZAccess: retenção de fotos de evento - %s", local_store.purge_pictures())
+                    except Exception:
+                        logger.exception("ZAccess: falha na retenção de fotos de evento")
 
         def heartbeat_loop():
             while not heartbeat_stop.is_set():

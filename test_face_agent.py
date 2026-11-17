@@ -7,7 +7,7 @@ import base64
 import os
 import tempfile
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
 import requests
@@ -29,7 +29,7 @@ from face_agent.face_client_factory import create_face_client
 from face_agent.hikvision_client import MAX_CONSEC_AUTH_FAILURES, HikvisionClient, HikvisionTerminal
 from face_agent.intelbras_biot_client import IntelbrasBioTClient, IntelbrasBioTTerminal
 from face_agent.intelbras_client import IntelbrasClient, IntelbrasTerminal
-from face_agent.local_store import LocalStore, PollCursor, RosterEntry
+from face_agent.local_store import _BR_TZ, LocalStore, PollCursor, RosterEntry
 from face_agent.schedule_enforcer import enforce_schedule, is_within_schedule, validity_state
 
 JPEG = b"\xff\xd8" + b"x" * 10 + b"\xff\xd9"
@@ -924,6 +924,51 @@ class LocalStoreTest(unittest.TestCase):
 
         self.store.remove_roster("t1", "123")
         self.assertEqual(self.store.list_by_terminal("t1"), [])
+
+    def _add_event(self, key, days_ago, picture, employee_no="1"):
+        self.store.add_events([{
+            "dedupe_key": key, "terminal_id": "t1", "employee_no": employee_no,
+            "time": (datetime.now(_BR_TZ) - timedelta(days=days_ago)).isoformat(), "direction": "in",
+            "success": True, "source": "face", "picture": picture,
+        }])
+
+    def test_new_db_has_incremental_auto_vacuum(self):
+        self.assertEqual(self.store._conn.execute("PRAGMA auto_vacuum").fetchone()[0], 2)
+
+    def test_purge_pictures_by_age_keeps_event(self):
+        self._add_event("old", 91, JPEG)
+        self._add_event("new", 89, JPEG)
+        result = self.store.purge_pictures()
+        self.assertEqual(result["aged"], 1)
+        self.assertIsNone(self.store.get_event_picture("old"))
+        self.assertIsNotNone(self.store.get_event("old"))
+        self.assertEqual(self.store.get_event_picture("new"), JPEG)
+
+    def test_purge_pictures_guest_only_after_purge_after(self):
+        self._add_event("g", 1, JPEG, employee_no="9")
+        self._add_event("other", 1, JPEG, employee_no="1")
+        purge_after = datetime.now(timezone.utc) + timedelta(days=10)
+        self.store.schedule_picture_purge("t1", "9", purge_after.isoformat())
+
+        self.store.purge_pictures(now=purge_after - timedelta(hours=1))
+        self.assertEqual(self.store.get_event_picture("g"), JPEG)
+
+        result = self.store.purge_pictures(now=purge_after)
+        self.assertEqual(result["guests"], 1)
+        self.assertIsNone(self.store.get_event_picture("g"))
+        self.assertEqual(self.store.get_event_picture("other"), JPEG)
+        # linha agendada some depois de aplicada
+        self.assertEqual(self.store._conn.execute("SELECT COUNT(*) FROM picture_purge").fetchone()[0], 0)
+
+    def test_purge_pictures_cap_removes_oldest_first(self):
+        for i, days in enumerate([5, 4, 3, 2]):
+            self._add_event(f"e{i}", days, b"x" * 100)
+        result = self.store.purge_pictures(max_bytes=250)
+        self.assertEqual(result["over_cap"], 2)
+        self.assertIsNone(self.store.get_event_picture("e0"))
+        self.assertIsNone(self.store.get_event_picture("e1"))
+        self.assertIsNotNone(self.store.get_event_picture("e2"))
+        self.assertIsNotNone(self.store.get_event_picture("e3"))
 
     def test_roster_pending_ack_set_and_clear(self):
         self.store.upsert_roster("t1", "9", "Convidado", JPEG, {"validFrom": "2026-03-11T00:00:00Z"}, pending_ack_person_id="p9")

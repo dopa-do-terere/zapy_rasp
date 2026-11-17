@@ -48,6 +48,13 @@
 
     .photo-lightbox { position: fixed; inset: 0; background: rgba(0,0,0,0.8); display: flex; align-items: center; justify-content: center; padding: 24px; cursor: zoom-out; z-index: 100; }
     .photo-lightbox img { max-width: min(90vw, 640px); max-height: 85vh; border-radius: var(--radius-lg); }
+    .photo-lightbox video { max-width: min(90vw, 960px); max-height: 85vh; border-radius: var(--radius-lg); background: #000; }
+    .btn-live {
+        display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+        border: 1px solid var(--border); border-radius: var(--radius-md); padding: 8px; font-size: 0.8rem; font-weight: 600;
+        font-family: var(--font-sans); cursor: pointer; background: var(--card); color: var(--foreground);
+    }
+    .btn-live:hover { border-color: var(--z-violet-500); }
 
     .ev-filters { display: flex; flex-direction: column; gap: 8px; margin-bottom: 14px; }
     .search-field { position: relative; }
@@ -119,6 +126,9 @@
                     </div>
                     <span class="door-hint">{{ t.host }}</span>
                     <button type="button" class="btn-open" data-action="open-terminal">{{ icons.key_round(15) }}Abrir porta</button>
+                    {% if t.live %}
+                    <button type="button" class="btn-live" data-live-terminal="{{ t.id }}">Ao vivo</button>
+                    {% endif %}
                     <div class="door-msg"></div>
                 </div>
                 {% endfor %}
@@ -194,6 +204,9 @@
 <div class="photo-lightbox" id="photoLightbox" style="display:none;">
     <img id="photoLightboxImg" src="" alt="Foto do evento ampliada">
 </div>
+<div class="photo-lightbox" id="liveLightbox" style="display:none;">
+    <video id="liveVideo" autoplay muted playsinline></video>
+</div>
 {% endblock %}
 
 {% block extra_body %}
@@ -243,6 +256,36 @@
     bindOpenButtons('relayGrid', function(card) { return '/api/cockpit/relays/' + encodeURIComponent(card.dataset.relay) + '/open'; });
     bindOpenButtons('terminalGrid', function(card) { return '/api/cockpit/face-terminals/' + encodeURIComponent(card.dataset.terminal) + '/open'; });
     bindOpenButtons('antennaGrid', function(card) { return '/api/cockpit/vehicle-antennas/' + encodeURIComponent(card.dataset.antenna) + '/open-gate'; });
+
+    // --- vídeo ao vivo (MP4 fragmentado via go2rtc local) ---
+    var liveBox = document.getElementById('liveLightbox');
+    var liveVideo = document.getElementById('liveVideo');
+    var liveCard = null;
+    function closeLive() {
+        if (liveBox.style.display === 'none') return;
+        liveBox.style.display = 'none';
+        // Solta a conexão (libera a vaga de ZAPY_LIVE_MAX_VIEWERS no servidor).
+        liveVideo.removeAttribute('src');
+        liveVideo.load();
+        liveCard = null;
+    }
+    liveVideo.addEventListener('error', function() {
+        if (!liveCard || !liveVideo.getAttribute('src')) return;
+        var msg = liveCard.querySelector('.door-msg');
+        closeLive();
+        msg.textContent = 'Vídeo indisponível (limite de visualizações ou terminal fora do ar).';
+    });
+    var terminalGrid = document.getElementById('terminalGrid');
+    terminalGrid && terminalGrid.addEventListener('click', function(e) {
+        var btn = e.target.closest('[data-live-terminal]');
+        if (!btn) return;
+        liveCard = btn.closest('.door-card');
+        liveCard.querySelector('.door-msg').textContent = '';
+        liveVideo.src = '/api/cockpit/face-terminals/' + encodeURIComponent(btn.dataset.liveTerminal) + '/live.mp4';
+        liveBox.style.display = 'flex';
+    });
+    liveBox.addEventListener('click', closeLive);
+    document.addEventListener('keydown', function(e) { if (e.key === 'Escape') closeLive(); });
 
     // --- eventos recentes (mesmo padrão de events.html) ---
     var container = document.getElementById('eventsList');

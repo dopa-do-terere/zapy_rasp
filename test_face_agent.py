@@ -1960,5 +1960,110 @@ class Go2rtcManagerTest(unittest.TestCase):
         with tempfile.NamedTemporaryFile() as f:
             self.assertTrue(Go2rtcManager(f.name).available)
 
+
+class CockpitLiveRouteTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        os.environ.setdefault("GPIOZERO_PIN_FACTORY", "mock")
+        # LocalStore mockado: importar app.py não toca o face_agent.sqlite3 de verdade.
+        with patch("face_agent.LocalStore", MagicMock()):
+            import app as app_module
+        cls.app_module = app_module
+
+    def setUp(self):
+        fd, path = tempfile.mkstemp(suffix=".json")
+        os.close(fd)
+        os.remove(path)
+        self._path = path
+        patches = [
+            patch.object(face_terminals_store, "STORE_PATH", path),
+            patch.object(self.app_module, "live_video", MagicMock(available=True, api_url="http://127.0.0.1:1984")),
+            patch.object(self.app_module, "_live_viewers", 0),
+            patch.dict(os.environ, {"ZAPY_LIVE_MAX_VIEWERS": "0"}),
+        ]
+        for p in patches:
+            p.start()
+            self.addCleanup(p.stop)
+        self.upstream = MagicMock(status_code=200)
+        self.upstream.iter_content.return_value = iter([b"ftyp", b"moof"])
+        get = patch.object(self.app_module.requests, "get", return_value=self.upstream)
+        self.requests_get = get.start()
+        self.addCleanup(get.stop)
+        self.terminal = face_terminals_store.create_terminal(
+            {"vendor": "hikvision", "host": "192.0.2.5", "username": "admin", "password": "pw", "cockpit_enabled": False})
+        self.url = f"/api/cockpit/face-terminals/{self.terminal['id']}/live.mp4"
+
+    def tearDown(self):
+        if os.path.exists(self._path):
+            os.remove(self._path)
+
+    def _client(self, role="admin"):
+        client = self.app_module.app.test_client()
+        if role:
+            with client.session_transaction() as sess:
+                sess["logged_in"] = True
+                sess["role"] = role
+        return client
+
+    def test_requires_login(self):
+        res = self._client(role=None).get(self.url)
+        self.assertIn(res.status_code, (302, 401))
+
+    def test_porteiro_blocked_when_cockpit_disabled(self):
+        self.assertEqual(self._client("porteiro").get(self.url).status_code, 403)
+
+    def test_404_without_binary_or_url(self):
+        self.app_module.live_video.available = False
+        self.assertEqual(self._client().get(self.url).status_code, 404)
+        self.app_module.live_video.available = True
+        cid = face_terminals_store.create_terminal({"vendor": "controlid", "host": "192.0.2.6"})
+        self.assertEqual(self._client().get(f"/api/cockpit/face-terminals/{cid['id']}/live.mp4").status_code, 404)
+        self.assertEqual(self._client().get("/api/cockpit/face-terminals/nao-existe/live.mp4").status_code, 404)
+
+    def test_streams_upstream_bytes(self):
+        res = self._client().get(self.url)
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.mimetype, "video/mp4")
+        self.assertEqual(res.headers["Cache-Control"], "no-store")
+        self.assertEqual(res.data, b"ftypmoof")
+        res.close()
+        self.app_module.live_video.ensure_stream.assert_called_once()
+        self.assertEqual(self.app_module.live_video.ensure_stream.call_args.args[0], self.terminal["id"])
+        self.assertEqual(self.requests_get.call_args.kwargs["params"], {"src": self.terminal["id"]})
+        self.assertTrue(self.requests_get.call_args.kwargs["stream"])
+        self.upstream.close.assert_called()
+        self.assertEqual(self.app_module._live_viewers, 0)
+
+    def test_limit_429_then_released_after_client_closes(self):
+        os.environ["ZAPY_LIVE_MAX_VIEWERS"] = "1"
+        first = self._client().get(self.url, buffered=False)
+        self.assertEqual(first.status_code, 200)
+        second = self._client().get(self.url)
+        self.assertEqual(second.status_code, 429)
+        self.assertEqual(second.get_json()["message"], "limite de visualizacoes")
+        first.close()
+        self.assertEqual(self.app_module._live_viewers, 0)
+        third = self._client().get(self.url)
+        self.assertEqual(third.status_code, 200)
+        third.close()
+
+    def test_zero_is_unlimited(self):
+        responses = [self._client().get(self.url, buffered=False) for _ in range(5)]
+        self.assertEqual([r.status_code for r in responses], [200] * 5)
+        for r in reversed(responses):  # stream_with_context empilha contexto: fecha na ordem inversa
+            r.close()
+        self.assertEqual(self.app_module._live_viewers, 0)
+
+    def test_upstream_error_is_502_and_releases(self):
+        self.upstream.status_code = 404
+        self.assertEqual(self._client().get(self.url).status_code, 502)
+        self.assertEqual(self.app_module._live_viewers, 0)
+
+    def test_cockpit_page_flags_live_per_terminal(self):
+        face_terminals_store.create_terminal({"vendor": "controlid", "host": "192.0.2.6", "name": "SemVideo"})
+        html = self._client().get("/cockpit").get_data(as_text=True)
+        self.assertIn(f'data-live-terminal="{self.terminal["id"]}"', html)
+        self.assertEqual(html.count("data-live-terminal="), 1)
+
 if __name__ == "__main__":
     unittest.main()

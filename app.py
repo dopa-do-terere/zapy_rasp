@@ -9,7 +9,8 @@ import time
 from datetime import datetime, timedelta, timezone
 
 from dotenv import load_dotenv
-from flask import Flask, render_template, redirect, url_for, request, jsonify, session, Response
+import requests
+from flask import Flask, render_template, redirect, url_for, request, jsonify, session, Response, stream_with_context
 from functools import wraps
 
 load_dotenv()
@@ -23,6 +24,7 @@ import vehicle_antennas_store
 import users_store
 from face_agent import FaceProvisioningError, LocalStore, create_face_client
 from face_agent.controlid_uhf_client import ControlIdTerminal, ControlIdUhfClient
+from face_agent.live_video import Go2rtcManager, build_rtsp_url
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
@@ -55,6 +57,11 @@ app.secret_key = _load_or_create_secret_key()
 # Mesmo arquivo SQLite (WAL) que zaccess_client.py escreve — conexão própria só de
 # leitura pro painel, não depende da thread do cliente ZAccess estar rodando.
 local_store = LocalStore()
+
+# Vídeo ao vivo no Cockpit (só terminais do cadastro local) — ver face_agent/live_video.py.
+live_video = Go2rtcManager()
+_live_lock = threading.Lock()
+_live_viewers = 0
 
 EVENT_DIRECTION_LABEL = {"in": "Entrada", "out": "Saída", "unknown": "—"}
 
@@ -517,7 +524,8 @@ def cockpit_page():
     allowed_relays = set(RELAY_PINS.keys()) if is_admin else _cockpit_allowed_relay_ids()
     relays = [{"id": rid, "pulseSeconds": _get_pulse_seconds(rid)} for rid in RELAY_PINS if rid in allowed_relays]
     terminals = [
-        face_terminals_store.for_display(t) for t in face_terminals_store.list_terminals()
+        dict(face_terminals_store.for_display(t), live=_live_available(t))
+        for t in face_terminals_store.list_terminals()
         if is_admin or t.get("cockpit_enabled", True)
     ]
     antennas = [
@@ -587,6 +595,79 @@ def api_cockpit_face_terminal_open(terminal_id):
             "device_name": "Liberado pelo Cockpit",
         }])
     return jsonify({"success": bool(result.get("ok")), "reason": result.get("reason")}), (200 if result.get("ok") else 502)
+
+
+def _live_available(terminal: dict) -> bool:
+    return live_video.available and build_rtsp_url(terminal) is not None
+
+
+def _live_max_viewers() -> int:
+    """ZAPY_LIVE_MAX_VIEWERS no .env — 0/vazio/inválido = ilimitado."""
+    try:
+        return max(0, int((os.environ.get("ZAPY_LIVE_MAX_VIEWERS") or "0").strip()))
+    except ValueError:
+        return 0
+
+
+@app.route('/api/cockpit/face-terminals/<terminal_id>/live.mp4')
+@login_required
+def api_cockpit_face_terminal_live(terminal_id):
+    """Vídeo ao vivo (MP4 fragmentado) do terminal, repassado do go2rtc local. Mesma regra
+    de acesso do botão "Abrir porta". Nunca loga a URL RTSP (tem a senha)."""
+    global _live_viewers
+    terminal = face_terminals_store.get_terminal(terminal_id)
+    if terminal is None:
+        return jsonify({"success": False, "message": "terminal não encontrado"}), 404
+    if session.get("role") != "admin" and not terminal.get("cockpit_enabled", True):
+        return jsonify({"success": False, "message": "terminal não liberado pro porteiro"}), 403
+    src = build_rtsp_url(terminal)
+    if src is None or not live_video.available:
+        return jsonify({"success": False, "message": "vídeo ao vivo indisponível"}), 404
+
+    limit = _live_max_viewers()
+    with _live_lock:
+        if limit and _live_viewers >= limit:
+            return jsonify({"success": False, "message": "limite de visualizacoes"}), 429
+        _live_viewers += 1
+
+    state = {"released": False, "upstream": None}
+
+    def release():
+        # Idempotente: roda no finally do gerador e no close da resposta (cliente que fecha
+        # a aba antes do primeiro chunk não chega a entrar no gerador).
+        global _live_viewers
+        with _live_lock:
+            if state["released"]:
+                return
+            state["released"] = True
+            _live_viewers -= 1
+        if state["upstream"] is not None:
+            state["upstream"].close()
+
+    try:
+        live_video.ensure_stream(terminal_id, src)
+        state["upstream"] = requests.get(
+            f"{live_video.api_url}/api/stream.mp4", params={"src": terminal_id}, stream=True, timeout=(5, 30),
+        )
+    except Exception as e:
+        release()
+        logging.error("live: falha ao abrir vídeo do terminal %s - %s", terminal_id, type(e).__name__)
+        return jsonify({"success": False, "message": "falha ao abrir o vídeo"}), 502
+    if state["upstream"].status_code != 200:
+        logging.error("live: go2rtc respondeu %s pro terminal %s", state["upstream"].status_code, terminal_id)
+        release()
+        return jsonify({"success": False, "message": "falha ao abrir o vídeo"}), 502
+
+    def generate():
+        try:
+            for chunk in state["upstream"].iter_content(65536):
+                yield chunk
+        finally:
+            release()
+
+    response = Response(stream_with_context(generate()), mimetype="video/mp4", headers={"Cache-Control": "no-store"})
+    response.call_on_close(release)
+    return response
 
 
 @app.route('/usuarios')

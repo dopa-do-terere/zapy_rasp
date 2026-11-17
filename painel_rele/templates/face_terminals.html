@@ -50,6 +50,10 @@
                 '<div class="field"><label>Usuário</label><input class="f-user" value="' + escapeHtml(t.username) + '" placeholder="admin"></div>' +
             '</div>' +
             '<div class="field"><label>Senha</label><input type="password" class="f-password" value="' + escapeHtml(t.password) + '" placeholder="' + (isNew ? '' : 'deixe em branco pra manter') + '"></div>' +
+            '<div class="grid2">' +
+                '<div class="field"><label>Porta RTSP</label><input type="number" class="f-rtsp-port" value="' + (t.rtsp_port || 554) + '" min="1" max="65535"></div>' +
+                '<div class="field"><label>Caminho RTSP (opcional)</label><input class="f-rtsp-path" value="' + escapeHtml(t.rtsp_path || '') + '" placeholder="padrão do fabricante (substream)"></div>' +
+            '</div>' +
             '<div class="field relay-level-field" style="display:' + (isIntelbras ? 'block' : 'none') + '">' +
                 '<label>Nível do relé (Intelbras)</label>' +
                 '<select class="f-relay-level">' +
@@ -97,6 +101,8 @@
             cockpit_enabled: card.querySelector('.f-cockpit').checked,
             relay_level: relaySelect ? parseInt(relaySelect.value, 10) : 0,
             group_id: groupIdInput ? groupIdInput.value.trim() : '',
+            rtsp_port: parseInt(card.querySelector('.f-rtsp-port').value, 10) || 554,
+            rtsp_path: card.querySelector('.f-rtsp-path').value.trim(),
         };
     }
 
@@ -167,7 +173,7 @@
     });
 
     document.getElementById('addTerminal').addEventListener('click', function() {
-        terminals.push({ id: '', name: '', vendor: 'hikvision', host: '', port: 80, username: '', password: '', https: false, verify_tls: true, cockpit_enabled: true, relay_level: 0, group_id: '' });
+        terminals.push({ id: '', name: '', vendor: 'hikvision', host: '', port: 80, username: '', password: '', https: false, verify_tls: true, cockpit_enabled: true, relay_level: 0, group_id: '', rtsp_port: 554, rtsp_path: '' });
         render();
     });
 

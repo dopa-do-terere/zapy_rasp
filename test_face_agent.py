@@ -9,11 +9,13 @@ import os
 import sqlite3
 import tempfile
 import threading
+import time
 import unittest
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
 import requests
+from simple_websocket import ConnectionClosed
 
 import face_terminals_store
 from local_event_pollers import sync_local_event_pollers
@@ -34,7 +36,9 @@ from face_agent.face_client_factory import create_face_client
 from face_agent.hikvision_client import MAX_CONSEC_AUTH_FAILURES, HikvisionClient, HikvisionTerminal
 from face_agent.intelbras_biot_client import IntelbrasBioTClient, IntelbrasBioTTerminal
 from face_agent.intelbras_client import IntelbrasClient, IntelbrasTerminal
-from face_agent.live_video import Go2rtcManager, build_rtsp_url
+from face_agent.live_video import (
+    Go2rtcManager, build_rtsp_url, classify_error, client_message_allowed, proxy_live, scrub, translate_upstream_text,
+)
 from face_agent.local_store import _BR_TZ, LocalStore, PollCursor, RosterEntry
 from face_agent.schedule_enforcer import enforce_schedule, is_within_schedule, validity_state
 
@@ -1961,7 +1965,132 @@ class Go2rtcManagerTest(unittest.TestCase):
             self.assertTrue(Go2rtcManager(f.name).available)
 
 
-class CockpitLiveRouteTest(unittest.TestCase):
+class FakeWs:
+    """WebSocket fake (mesma interface do simple_websocket: send/receive/close). `incoming`:
+    mensagens a entregar em ordem; CLOSED na fila levanta ConnectionClosed; fila vazia =
+    timeout (None) ou, com closed_when_empty, conexão fechada."""
+    CLOSED = object()
+
+    def __init__(self, incoming=(), closed_when_empty=False, reply_after_send=False):
+        self.incoming = list(incoming)
+        self.reply_after_send = reply_after_send  # go2rtc só responde depois do {"type":"mse"}
+        self.sent = []
+        self.closed_with = None
+        self.closed_when_empty = closed_when_empty
+
+    def send(self, data):
+        if self.closed_with is not None:
+            raise ConnectionClosed(1000, None)
+        self.sent.append(data)
+
+    def receive(self, timeout=None):
+        deadline = time.monotonic() + (timeout if timeout is not None else 5)
+        while True:
+            if self.closed_with is not None:
+                raise ConnectionClosed(1000, None)
+            if self.incoming and (self.sent or not self.reply_after_send):
+                msg = self.incoming.pop(0)
+                if msg is FakeWs.CLOSED:
+                    raise ConnectionClosed(1000, None)
+                return msg
+            if self.closed_when_empty and not self.incoming:
+                raise ConnectionClosed(1000, None)
+            if time.monotonic() >= deadline:
+                return None  # timeout, igual ao simple_websocket
+            time.sleep(0.005)
+
+    def close(self, reason=None, message=None):
+        if self.closed_with is not None:
+            raise ConnectionClosed(1000, None)
+        self.closed_with = (reason, message)
+
+
+class LiveProtocolTest(unittest.TestCase):
+    MSE = '{"type": "mse", "value": "avc1.640029,avc1.4D401F"}'
+
+    def test_client_message_filter(self):
+        self.assertTrue(client_message_allowed(self.MSE))
+        self.assertTrue(client_message_allowed('{"type":"mse","value":"video/mp4; codecs=\\"avc1.4d001f\\""}'))
+        self.assertFalse(client_message_allowed('{"type":"webrtc","value":"avc1"}'))
+        self.assertFalse(client_message_allowed('{"type":"mse","value":"avc1","x":1}'))
+        self.assertFalse(client_message_allowed(b'{"type":"mse","value":"avc1"}'))
+        self.assertFalse(client_message_allowed('{"type":"mse","value":"' + "a" * 1100 + '"}'))
+        self.assertFalse(client_message_allowed('{"type":"mse","value":"avc1<script>"}'))
+        self.assertFalse(client_message_allowed('{"type":"mse","value":""}'))
+        self.assertFalse(client_message_allowed('{"type":"mse","value":1}'))
+        self.assertFalse(client_message_allowed("nao e json"))
+        self.assertFalse(client_message_allowed('["mse"]'))
+
+    def test_scrub(self):
+        self.assertEqual(scrub("dial rtsp://admin:p@ss@192.0.2.5:554/cam x"), "dial rtsp://***@192.0.2.5:554/cam x")
+        self.assertEqual(scrub("rtsp://admin:pw@h/a e rtsp://u:v@h2/b"), "rtsp://***@h/a e rtsp://***@h2/b")
+        self.assertEqual(scrub("sem url"), "sem url")
+
+    def test_classify_error(self):
+        self.assertEqual(classify_error("streams: dial tcp 192.0.2.5:554: connect: connection refused"),
+                         "porta RTSP recusada ou terminal sem resposta")
+        self.assertEqual(classify_error("dial tcp: i/o timeout"), "porta RTSP recusada ou terminal sem resposta")
+        self.assertEqual(classify_error("connect: no route to host"), "porta RTSP recusada ou terminal sem resposta")
+        self.assertEqual(classify_error("rtsp://admin:pw@h/x: wrong user/pass"), "falha de autenticacao RTSP")
+        self.assertEqual(classify_error("RTSP/1.0 401 Unauthorized"), "falha de autenticacao RTSP")
+        self.assertEqual(classify_error("codecs not matched: video:H265"), "terminal em H.265, nao suportado (configure H.264)")
+        self.assertEqual(classify_error("unsupported codec hvc1"), "terminal em H.265, nao suportado (configure H.264)")
+        other = classify_error("algo estranho em rtsp://admin:segredo@192.0.2.5/x " + "y" * 300)
+        self.assertTrue(other.startswith("video indisponivel: algo estranho em rtsp://***@192.0.2.5/x"))
+        self.assertNotIn("segredo", other)
+        self.assertLessEqual(len(other), len("video indisponivel: ") + 120)
+
+    def test_translate_upstream_text(self):
+        self.assertEqual(translate_upstream_text(self.MSE), (self.MSE, None))
+        fwd, code = translate_upstream_text('{"type":"error","value":"rtsp://admin:pw@h/x connection refused"}')
+        self.assertEqual(json.loads(fwd), {"type": "error", "value": "porta RTSP recusada ou terminal sem resposta"})
+        self.assertEqual(code, 1011)
+        self.assertEqual(translate_upstream_text('{"type":"webrtc/candidate","value":"x"}'), (None, None))
+        self.assertEqual(translate_upstream_text("nao e json"), (None, None))
+
+
+class LiveProxyTest(unittest.TestCase):
+    MSE = LiveProtocolTest.MSE
+
+    def test_forwards_binary_and_mse_translates_error_and_closes(self):
+        upstream = FakeWs([self.MSE, b"init", b"seg",
+                           '{"type":"error","value":"rtsp://admin:pw@192.0.2.5 connection refused"}'],
+                          reply_after_send=True)
+        client = FakeWs([self.MSE])
+        with self.assertLogs("face_agent.live_video", "WARNING") as logs:
+            proxy_live(client, upstream, idle_timeout=1)
+        self.assertEqual(upstream.sent, [self.MSE])
+        self.assertEqual(client.sent[:3], [self.MSE, b"init", b"seg"])
+        self.assertEqual(json.loads(client.sent[3])["type"], "error")
+        self.assertNotIn("pw", "".join(m for m in client.sent if isinstance(m, str)))
+        self.assertNotIn("pw", "".join(logs.output))
+        self.assertEqual(client.closed_with[0], 1011)
+        self.assertIsNotNone(upstream.closed_with)
+
+    def test_invalid_client_message_closes_1008(self):
+        upstream = FakeWs()
+        client = FakeWs(['{"type":"webrtc/offer","value":"x"}'])
+        proxy_live(client, upstream, idle_timeout=5)
+        self.assertEqual(client.closed_with[0], 1008)
+        self.assertEqual(upstream.sent, [])
+        self.assertIsNotNone(upstream.closed_with)
+
+    def test_upstream_idle_closes_1011(self):
+        upstream = FakeWs()  # nunca manda nada
+        client = FakeWs()
+        started = time.monotonic()
+        proxy_live(client, upstream, idle_timeout=0.05)
+        self.assertEqual(client.closed_with[0], 1011)
+        self.assertLess(time.monotonic() - started, 3)
+
+    def test_client_gone_closes_upstream(self):
+        upstream = FakeWs()
+        client = FakeWs(closed_when_empty=True)
+        proxy_live(client, upstream, idle_timeout=5)
+        self.assertIsNotNone(upstream.closed_with)
+
+
+class LiveWsRouteTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         os.environ.setdefault("GPIOZERO_PIN_FACTORY", "mock")
@@ -1975,95 +2104,77 @@ class CockpitLiveRouteTest(unittest.TestCase):
         os.close(fd)
         os.remove(path)
         self._path = path
+        self.upstream = FakeWs()
+        self.manager = MagicMock(available=True)
+        self.manager.connect_ws.return_value = self.upstream
+        self.proxy = MagicMock()
         patches = [
             patch.object(face_terminals_store, "STORE_PATH", path),
-            patch.object(self.app_module, "live_video", MagicMock(available=True, api_url="http://127.0.0.1:1984")),
+            patch.object(self.app_module, "live_video", self.manager),
+            patch.object(self.app_module, "proxy_live", self.proxy),
             patch.object(self.app_module, "_live_viewers", 0),
-            patch.dict(os.environ, {"ZAPY_LIVE_MAX_VIEWERS": "0"}),
+            patch.dict(os.environ, {"ZAPY_LIVE_MAX_VIEWERS": "0", "ZAPY_LIVE_ENABLED": ""}),
         ]
         for p in patches:
             p.start()
             self.addCleanup(p.stop)
-        self.upstream = MagicMock(status_code=200)
-        self.upstream.iter_content.return_value = iter([b"ftyp", b"moof"])
-        get = patch.object(self.app_module.requests, "get", return_value=self.upstream)
-        self.requests_get = get.start()
-        self.addCleanup(get.stop)
         self.terminal = face_terminals_store.create_terminal(
             {"vendor": "hikvision", "host": "192.0.2.5", "username": "admin", "password": "pw", "cockpit_enabled": False})
-        self.url = f"/api/cockpit/face-terminals/{self.terminal['id']}/live.mp4"
 
     def tearDown(self):
         if os.path.exists(self._path):
             os.remove(self._path)
 
-    def _client(self, role="admin"):
-        client = self.app_module.app.test_client()
-        if role:
-            with client.session_transaction() as sess:
-                sess["logged_in"] = True
-                sess["role"] = role
-        return client
+    def _run(self, terminal_id=None, role="admin"):
+        ws = FakeWs()
+        with self.app_module.app.test_request_context():
+            if role:
+                from flask import session
+                session["logged_in"] = True
+                session["role"] = role
+            self.app_module._handle_live_ws(ws, terminal_id or self.terminal["id"])
+        return ws
 
-    def test_requires_login(self):
-        res = self._client(role=None).get(self.url)
-        self.assertIn(res.status_code, (302, 401))
+    def test_4401_without_login(self):
+        self.assertEqual(self._run(role=None).closed_with[0], 4401)
+        self.manager.ensure_stream.assert_not_called()
 
-    def test_porteiro_blocked_when_cockpit_disabled(self):
-        self.assertEqual(self._client("porteiro").get(self.url).status_code, 403)
+    def test_4403_porteiro_without_cockpit(self):
+        self.assertEqual(self._run(role="porteiro").closed_with[0], 4403)
 
-    def test_404_without_binary_or_url(self):
-        self.app_module.live_video.available = False
-        self.assertEqual(self._client().get(self.url).status_code, 404)
-        self.app_module.live_video.available = True
+    def test_4404_missing_terminal_rtsp_or_binary(self):
+        self.assertEqual(self._run("nao-existe").closed_with[0], 4404)
         cid = face_terminals_store.create_terminal({"vendor": "controlid", "host": "192.0.2.6"})
-        self.assertEqual(self._client().get(f"/api/cockpit/face-terminals/{cid['id']}/live.mp4").status_code, 404)
-        self.assertEqual(self._client().get("/api/cockpit/face-terminals/nao-existe/live.mp4").status_code, 404)
+        self.assertEqual(self._run(cid["id"]).closed_with[0], 4404)
+        self.manager.available = False
+        self.assertEqual(self._run().closed_with[0], 4404)
 
-    def test_streams_upstream_bytes(self):
-        res = self._client().get(self.url)
-        self.assertEqual(res.status_code, 200)
-        self.assertEqual(res.mimetype, "video/mp4")
-        self.assertEqual(res.headers["Cache-Control"], "no-store")
-        self.assertEqual(res.data, b"ftypmoof")
-        res.close()
-        self.app_module.live_video.ensure_stream.assert_called_once()
-        self.assertEqual(self.app_module.live_video.ensure_stream.call_args.args[0], self.terminal["id"])
-        self.assertEqual(self.requests_get.call_args.kwargs["params"], {"src": self.terminal["id"]})
-        self.assertTrue(self.requests_get.call_args.kwargs["stream"])
-        self.upstream.close.assert_called()
-        self.assertEqual(self.app_module._live_viewers, 0)
-
-    def test_limit_429_then_released_after_client_closes(self):
+    def test_4429_over_limit(self):
         os.environ["ZAPY_LIVE_MAX_VIEWERS"] = "1"
-        first = self._client().get(self.url, buffered=False)
-        self.assertEqual(first.status_code, 200)
-        second = self._client().get(self.url)
-        self.assertEqual(second.status_code, 429)
-        self.assertEqual(second.get_json()["message"], "limite de visualizacoes")
-        first.close()
-        self.assertEqual(self.app_module._live_viewers, 0)
-        third = self._client().get(self.url)
-        self.assertEqual(third.status_code, 200)
-        third.close()
+        self.app_module._live_viewers = 1  # outra visualização aberta
+        self.assertEqual(self._run().closed_with[0], 4429)
+        self.assertEqual(self.app_module._live_viewers, 1)
 
-    def test_zero_is_unlimited(self):
-        responses = [self._client().get(self.url, buffered=False) for _ in range(5)]
-        self.assertEqual([r.status_code for r in responses], [200] * 5)
-        for r in reversed(responses):  # stream_with_context empilha contexto: fecha na ordem inversa
-            r.close()
+    def test_proxies_and_releases_slot(self):
+        ws = self._run()
+        self.manager.ensure_stream.assert_called_once()
+        self.assertEqual(self.manager.ensure_stream.call_args.args[0], self.terminal["id"])
+        self.manager.connect_ws.assert_called_once_with(self.terminal["id"])
+        self.proxy.assert_called_once_with(ws, self.upstream)
         self.assertEqual(self.app_module._live_viewers, 0)
 
-    def test_upstream_error_is_502_and_releases(self):
-        self.upstream.status_code = 404
-        self.assertEqual(self._client().get(self.url).status_code, 502)
+    def test_failure_closes_1011_and_releases_slot(self):
+        self.manager.ensure_stream.side_effect = RuntimeError("go2rtc fora")
+        ws = self._run()
+        self.assertEqual(ws.closed_with[0], 1011)
         self.assertEqual(self.app_module._live_viewers, 0)
 
-    def test_cockpit_page_flags_live_per_terminal(self):
-        face_terminals_store.create_terminal({"vendor": "controlid", "host": "192.0.2.6", "name": "SemVideo"})
-        html = self._client().get("/cockpit").get_data(as_text=True)
-        self.assertIn(f'data-live-terminal="{self.terminal["id"]}"', html)
-        self.assertEqual(html.count("data-live-terminal="), 1)
+    def test_release_is_idempotent(self):
+        release = self.app_module._acquire_live_slot()
+        self.assertEqual(self.app_module._live_viewers, 1)
+        release()
+        release()
+        self.assertEqual(self.app_module._live_viewers, 0)
 
 
 class Go2rtcInstallScriptsTest(unittest.TestCase):

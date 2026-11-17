@@ -1,7 +1,8 @@
 """
 Vídeo ao vivo do Cockpit: o go2rtc (binário em <repo>/bin, instalado pelo install.sh)
-puxa o RTSP do substream do terminal e entrega MP4 fragmentado (H.264 sem recodificar)
-em 127.0.0.1:1984; o Flask só repassa esse MP4 (ver app.py, live.mp4).
+puxa o RTSP do substream do terminal e entrega MSE (H.264 sem recodificar) por WebSocket
+em 127.0.0.1:1984; o Flask só faz proxy desse WebSocket, filtrando as mensagens nos dois
+sentidos (ver proxy_live e a rota /ws/cockpit/... em app.py).
 
 Segurança: o go2rtc escuta SÓ em 127.0.0.1 (rtsp/webrtc/srtp desligados — sem isso ele
 abre 8554/8555 em todas as interfaces). A URL RTSP carrega a senha do terminal: nunca vai
@@ -12,12 +13,14 @@ import atexit
 import json
 import logging
 import os
+import re
 import subprocess
 import threading
 import time
 from urllib.parse import quote
 
 import requests
+from simple_websocket import Client as WsClient
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +34,11 @@ _DEFAULT_RTSP_PATHS = {
     "intelbras": "/cam/realmonitor?channel=1&subtype=1",
     "intelbras_biot": "/cam/realmonitor?channel=1&subtype=1",
 }
+
+UPSTREAM_IDLE_SECONDS = 15  # go2rtc sem mandar nada por isso: conexão morta, fecha
+_CLIENT_MAX_BYTES = 1024
+_MSE_VALUE = re.compile(r'[A-Za-z0-9.,;=_\- "/]{1,300}')
+_URL_CREDENTIALS = re.compile(r"([a-zA-Z][a-zA-Z0-9+.-]*://)[^\s/]*@")
 
 _HTTP_TIMEOUT = 5
 _API_READY_ATTEMPTS = 25  # x 0.2s: go2rtc recém-iniciado demora um pouco pra abrir a API
@@ -48,6 +56,115 @@ def build_rtsp_url(t: dict) -> str | None:
     user = quote(t.get("username") or "", safe="")
     password = quote(t.get("password") or "", safe="")
     return f"rtsp://{user}:{password}@{t['host']}:{int(t.get('rtsp_port') or 554)}{path}"
+
+
+def scrub(text: str) -> str:
+    """Remove credencial de qualquer URL (rtsp://user:senha@ -> rtsp://***@). Tudo que vem
+    do go2rtc passa por aqui antes de ir pra log ou pro navegador."""
+    return _URL_CREDENTIALS.sub(r"\1***@", str(text))
+
+
+def classify_error(text: str) -> str:
+    """Erro do go2rtc -> mensagem pt-BR pro Cockpit. Strings do go2rtc a confirmar na
+    bancada; o que não casar sai genérico (já sem credencial)."""
+    low = str(text).lower()
+    if any(k in low for k in ("connection refused", "no route", "i/o timeout")):
+        return "porta RTSP recusada ou terminal sem resposta"
+    if any(k in low for k in ("401", "unauthorized", "user/pass")):
+        return "falha de autenticacao RTSP"
+    if any(k in low for k in ("h265", "hevc", "hvc1", "hev1")):
+        return "terminal em H.265, nao suportado (configure H.264)"
+    return "video indisponivel: " + scrub(text)[:120]
+
+
+def client_message_allowed(data) -> bool:
+    """Navegador só pode mandar {"type":"mse","value":"<codecs>"} — nada mais sobe pro go2rtc."""
+    if not isinstance(data, str) or len(data.encode("utf-8")) > _CLIENT_MAX_BYTES:
+        return False
+    try:
+        msg = json.loads(data)
+    except ValueError:
+        return False
+    return (
+        isinstance(msg, dict) and set(msg) == {"type", "value"} and msg["type"] == "mse"
+        and isinstance(msg["value"], str) and _MSE_VALUE.fullmatch(msg["value"]) is not None
+    )
+
+
+def translate_upstream_text(text: str) -> tuple[str | None, int | None]:
+    """Texto do go2rtc -> (o que repassar ao navegador ou None, close code ou None).
+    `mse` passa como está; `error` nunca passa cru (pode ter rtsp://user:senha@): vira a
+    mensagem classificada e fecha 1011; o resto é descartado."""
+    try:
+        msg = json.loads(text)
+    except ValueError:
+        return None, None
+    if not isinstance(msg, dict):
+        return None, None
+    if msg.get("type") == "mse":
+        return text, None
+    if msg.get("type") == "error":
+        logger.warning("live_video: go2rtc reportou erro - %s", scrub(msg.get("value"))[:300])
+        return json.dumps({"type": "error", "value": classify_error(msg.get("value") or "")}), 1011
+    return None, None
+
+
+def proxy_live(client, upstream, idle_timeout: float = UPSTREAM_IDLE_SECONDS) -> None:
+    """Liga o WebSocket do navegador (`client`) ao do go2rtc (`upstream`) até um dos lados
+    acabar. Uma thread por sentido; o fim de qualquer lado fecha os dois. Bloqueia."""
+    done = threading.Event()
+    lock = threading.Lock()
+
+    def finish(code: int, reason: str) -> None:
+        with lock:
+            if done.is_set():
+                return
+            done.set()
+        for ws, args in ((client, (code, reason)), (upstream, ())):
+            try:
+                ws.close(*args)
+            except Exception:
+                pass
+
+    def upstream_to_client() -> None:
+        while not done.is_set():
+            try:
+                msg = upstream.receive(timeout=idle_timeout)
+            except Exception:
+                return finish(1011, "upstream-closed")
+            if msg is None:
+                return finish(1011, "upstream-idle")
+            try:
+                if isinstance(msg, (bytes, bytearray)):
+                    client.send(bytes(msg))
+                    continue
+                forward, code = translate_upstream_text(msg)
+                if forward is not None:
+                    client.send(forward)
+                if code is not None:
+                    return finish(code, "upstream-error")
+            except Exception:
+                return finish(1000, "client-gone")
+
+    def client_to_upstream() -> None:
+        while not done.is_set():
+            try:
+                msg = client.receive(timeout=1)
+            except Exception:
+                return finish(1000, "bye")
+            if msg is None:
+                continue  # só pra reparar em `done`
+            if not client_message_allowed(msg):
+                return finish(1008, "protocol")
+            try:
+                upstream.send(msg)
+            except Exception:
+                return finish(1011, "upstream-closed")
+
+    thread = threading.Thread(target=upstream_to_client, daemon=True)
+    thread.start()
+    client_to_upstream()
+    thread.join()
 
 
 class Go2rtcManager:
@@ -113,6 +230,10 @@ class Go2rtcManager:
             if name not in listed:
                 raise RuntimeError(f"go2rtc não registrou o stream {name}")
             self._streams[name] = src
+
+    def connect_ws(self, name: str):
+        """WebSocket MSE do go2rtc pro stream `name` (já registrado via ensure_stream)."""
+        return WsClient.connect(f"ws://127.0.0.1:{self.api_port}/api/ws?src={quote(name, safe='')}")
 
     def stop(self) -> None:
         with self._lock:

@@ -3,4 +3,4 @@ gpiozero>=2.0
 python-socketio[client]>=5.10
 python-dotenv>=1.0
 requests>=2.31
-lgpio>=0.2.0; sys_platform == 'linux'
+lgpio>=0.2.0; sys_platform == "linux" and (platform_machine == "aarch64" or platform_machine == "armv7l" or platform_machine == "armv6l")

@@ -2089,6 +2089,25 @@ class Go2rtcInstallScriptsTest(unittest.TestCase):
         self.assertIn('GO2RTC_VERSION="1.9.4"', sh_text)
         self.assertIn('$Go2rtcVersion = "1.9.4"', ps1_text)
 
+    def test_lgpio_only_on_raspberry(self):
+        from pip._vendor.packaging.markers import Marker
+        with open(os.path.join(self.ROOT, "requirements.txt"), encoding="utf-8") as f:
+            line = next(l for l in f if l.startswith("lgpio"))
+        marker = Marker(line.split(";", 1)[1])
+        for machine in ("aarch64", "armv7l", "armv6l"):
+            self.assertTrue(marker.evaluate({"sys_platform": "linux", "platform_machine": machine}), machine)
+        self.assertFalse(marker.evaluate({"sys_platform": "linux", "platform_machine": "x86_64"}))
+        self.assertFalse(marker.evaluate({"sys_platform": "win32", "platform_machine": "AMD64"}))
+
+    def test_go2rtc_installed_before_pip(self):
+        """pip falhando (set -e / Die) não pode impedir o go2rtc de ser instalado."""
+        with open(os.path.join(self.ROOT, "install.sh"), encoding="utf-8") as f:
+            sh = f.read()
+        self.assertLess(sh.index("\ninstall_go2rtc || true"), sh.index('/.venv/bin/pip" install'))
+        with open(os.path.join(self.ROOT, "scripts", "install-windows.ps1"), encoding="utf-8") as f:
+            ps1 = f.read()
+        self.assertLess(ps1.index('Write-Step "instalando go2rtc'), ps1.index("& $VenvPip install"))
+
     def test_install_sh_syntax(self):
         import subprocess
         res = subprocess.run(["bash", "-n", os.path.join(self.ROOT, "install.sh")], capture_output=True, text=True)

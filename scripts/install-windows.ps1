@@ -59,23 +59,8 @@ try {
         Add-Content -Path $EnvPath -Value "`n# Sem GPIO real no Windows: usa pin factory mock`nGPIOZERO_PIN_FACTORY=mock"
     }
 
-    Write-Step "criando ambiente virtual (.venv)"
-    if (-not (Test-Path (Join-Path $InstallDir ".venv"))) {
-        if ($pyArgs) { & $PythonExe $pyArgs -m venv .venv } else { & $PythonExe -m venv .venv }
-        if ($LASTEXITCODE -ne 0) { Die "criação do venv falhou (código $LASTEXITCODE)." }
-    } else {
-        Write-Host ".venv já existe."
-    }
-
-    $VenvPython = Join-Path $InstallDir ".venv\Scripts\python.exe"
-    $VenvPip = Join-Path $InstallDir ".venv\Scripts\pip.exe"
-
-    Write-Step "instalando dependências"
-    & $VenvPip install -q --upgrade pip
-    & $VenvPip install -q -r requirements.txt
-    if ($LASTEXITCODE -ne 0) { Die "pip install falhou (código $LASTEXITCODE)." }
-
     # go2rtc (vídeo ao vivo no Cockpit) — opcional: falhou, avisa e segue sem vídeo.
+    # Antes do venv/pip: falha de pip (Die) não pode impedir o vídeo de ser instalado.
     # SHA-256 do release oficial (mesma tabela do install.sh — o teste
     # Go2rtcInstallScriptsTest confere que não divergem).
     $Go2rtcVersion = "1.9.4"
@@ -114,6 +99,22 @@ try {
             Remove-Item -Recurse -Force $TmpDir -ErrorAction SilentlyContinue
         }
     }
+
+    Write-Step "criando ambiente virtual (.venv)"
+    if (-not (Test-Path (Join-Path $InstallDir ".venv"))) {
+        if ($pyArgs) { & $PythonExe $pyArgs -m venv .venv } else { & $PythonExe -m venv .venv }
+        if ($LASTEXITCODE -ne 0) { Die "criação do venv falhou (código $LASTEXITCODE)." }
+    } else {
+        Write-Host ".venv já existe."
+    }
+
+    $VenvPython = Join-Path $InstallDir ".venv\Scripts\python.exe"
+    $VenvPip = Join-Path $InstallDir ".venv\Scripts\pip.exe"
+
+    Write-Step "instalando dependências"
+    & $VenvPip install -q --upgrade pip
+    & $VenvPip install -q -r requirements.txt
+    if ($LASTEXITCODE -ne 0) { Die "pip install falhou (código $LASTEXITCODE)." }
 } finally {
     Pop-Location
 }

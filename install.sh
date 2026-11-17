@@ -34,21 +34,6 @@ if [[ ! -f ".env" ]] && [[ -f ".env.example" ]]; then
   echo "[zapy] Arquivo .env criado a partir de .env.example. Ajuste se necessário."
 fi
 
-# --- Ambiente virtual e dependências (só como usuário normal) ---
-if [[ "$(id -u)" -ne 0 ]]; then
-  if [[ ! -d ".venv" ]]; then
-    echo "[zapy] Criando ambiente virtual..."
-    if ! python3 -m venv .venv 2>/dev/null; then
-      echo "[zapy] AVISO: python3 -m venv falhou. Tente: sudo apt install python3-full python3-venv"
-      exit 1
-    fi
-  fi
-  echo "[zapy] Instalando dependências Python..."
-  "$INSTALL_DIR/.venv/bin/pip" install -q --upgrade pip
-  "$INSTALL_DIR/.venv/bin/pip" install -q -r requirements.txt
-  echo "[zapy] Dependências instaladas."
-fi
-
 # --- go2rtc (vídeo ao vivo no Cockpit) — opcional: sem ele o zapy funciona, só sem vídeo ---
 GO2RTC_VERSION="1.9.4"
 
@@ -101,7 +86,23 @@ install_go2rtc() {
   echo "[zapy] go2rtc $GO2RTC_VERSION instalado em $bin_dir/go2rtc."
 }
 
+# Antes do venv/pip: falha de pip (set -e) não pode impedir o vídeo de ser instalado.
 install_go2rtc || true
+
+# --- Ambiente virtual e dependências (só como usuário normal) ---
+if [[ "$(id -u)" -ne 0 ]]; then
+  if [[ ! -d ".venv" ]]; then
+    echo "[zapy] Criando ambiente virtual..."
+    if ! python3 -m venv .venv 2>/dev/null; then
+      echo "[zapy] AVISO: python3 -m venv falhou. Tente: sudo apt install python3-full python3-venv"
+      exit 1
+    fi
+  fi
+  echo "[zapy] Instalando dependências Python..."
+  "$INSTALL_DIR/.venv/bin/pip" install -q --upgrade pip
+  "$INSTALL_DIR/.venv/bin/pip" install -q -r requirements.txt
+  echo "[zapy] Dependências instaladas."
+fi
 
 if $NO_SERVICE; then
   echo "[zapy] Concluído (sem serviço). Para rodar: $INSTALL_DIR/.venv/bin/python app.py"

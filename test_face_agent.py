@@ -7,6 +7,7 @@ import base64
 import os
 import sqlite3
 import tempfile
+import threading
 import unittest
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
@@ -14,6 +15,7 @@ from unittest.mock import MagicMock, patch
 import requests
 
 import face_terminals_store
+from local_event_pollers import sync_local_event_pollers
 import vehicle_antennas_store
 from face_agent.errors import FaceProvisioningError
 from face_agent.events_poller import (
@@ -1626,6 +1628,110 @@ class MakeEventsFetchTest(unittest.TestCase):
 
     def test_control_id_has_no_fetch(self):
         self.assertIsNone(make_events_fetch(MagicMock(spec=ControlIdClient), "t1"))
+
+
+class LocalEventPollersTest(unittest.TestCase):
+    def _terminal(self, tid="L1", vendor="hikvision", host="192.0.2.10", port=80, password="x"):
+        return {"id": tid, "name": "Portaria", "vendor": vendor, "host": host, "port": port,
+                "username": "admin", "password": password, "https": False, "verify_tls": True,
+                "relay_level": 0, "group_id": ""}
+
+    def _client(self, cls=HikvisionClient, host="192.0.2.10", port=80):
+        client = MagicMock(spec=cls)
+        client.terminal = MagicMock(host=host, port=port)
+        return client
+
+    def _sync(self, pollers, terminals, server_clients=None, client=None):
+        self.started = getattr(self, "started", [])
+        stops = []
+
+        def start_poller(store, local_id, fetch):
+            stop = threading.Event()
+            self.started.append((local_id, fetch))
+            stops.append(stop)
+            return stop
+
+        make_client = MagicMock(return_value=client or self._client())
+        result = sync_local_event_pollers(pollers, MagicMock(), terminals, server_clients or {},
+                                          make_client=make_client, start_poller=start_poller)
+        return result, make_client, stops
+
+    def test_creates_poller_for_local_terminal(self):
+        pollers, make_client, stops = self._sync({}, [self._terminal()])
+        self.assertEqual(list(pollers), ["L1"])
+        self.assertEqual([s[0] for s in self.started], ["L1"])
+        self.assertEqual(make_client.call_args.args[0], "hikvision")
+        self.assertEqual(make_client.call_args.kwargs["host"], "192.0.2.10")
+
+    def test_no_poller_for_control_id(self):
+        pollers, _, _ = self._sync({}, [self._terminal(vendor="controlid")], client=self._client(ControlIdClient))
+        self.assertEqual(pollers, {})
+        self.assertEqual(self.started, [])
+
+    def test_no_poller_when_server_has_same_host_port(self):
+        server = {"srv1": self._client(host="192.0.2.10", port=80)}
+        pollers, make_client, _ = self._sync({}, [self._terminal()], server_clients=server)
+        self.assertEqual(pollers, {})
+        make_client.assert_not_called()
+
+    def test_stops_when_server_takes_same_host_port(self):
+        pollers, _, stops = self._sync({}, [self._terminal()])
+        server = {"srv1": self._client(host="192.0.2.10", port=80)}
+        pollers, _, _ = self._sync(pollers, [self._terminal()], server_clients=server)
+        self.assertEqual(pollers, {})
+        self.assertTrue(stops[0].is_set())
+
+    def test_stops_when_removed(self):
+        pollers, _, stops = self._sync({}, [self._terminal()])
+        pollers, _, _ = self._sync(pollers, [])
+        self.assertEqual(pollers, {})
+        self.assertTrue(stops[0].is_set())
+
+    def test_edit_stops_old_and_starts_new(self):
+        pollers, _, old_stops = self._sync({}, [self._terminal(host="192.0.2.10")])
+        pollers, make_client, new_stops = self._sync(pollers, [self._terminal(host="192.0.2.11")])
+        self.assertTrue(old_stops[0].is_set())
+        self.assertEqual(list(pollers), ["L1"])
+        self.assertFalse(new_stops[0].is_set())
+        self.assertEqual(make_client.call_args.kwargs["host"], "192.0.2.11")
+        # mesmo ciclo sem mudança: não recria
+        pollers, make_client, _ = self._sync(pollers, [self._terminal(host="192.0.2.11")])
+        make_client.assert_not_called()
+
+    def test_client_failure_does_not_block_others(self):
+        make_client = MagicMock(side_effect=[ValueError("vendor desconhecido"), self._client()])
+        start_poller = MagicMock(return_value=threading.Event())
+        with self.assertLogs("local_event_pollers", "ERROR") as logs:
+            pollers = sync_local_event_pollers({}, MagicMock(), [self._terminal("L1", password="segredo"), self._terminal("L2", host="192.0.2.12")],
+                                               {}, make_client=make_client, start_poller=start_poller)
+        self.assertEqual(list(pollers), ["L2"])
+        self.assertNotIn("segredo", "".join(logs.output))
+
+    def test_default_start_persists_events_with_picture(self):
+        fd, path = tempfile.mkstemp(suffix=".sqlite3")
+        os.close(fd)
+        store = LocalStore(path)
+        try:
+            client = self._client()
+            client.fetch_picture.return_value = JPEG
+            event = {"dedupe_key": "ev1", "terminal_id": "L1", "employee_no": "1",
+                     "time": datetime.now(_BR_TZ).isoformat(), "direction": "in", "success": True,
+                     "source": "face", "picture_url": "/pic/1"}
+
+            def fake_start(self_poller, on_events, *, interval_seconds):
+                on_events(self_poller.poll_once())  # síncrono, sem thread
+                return None, threading.Event()
+
+            with patch("face_agent.events_poller.fetch_hikvision_events_since",
+                       return_value=([event], PollCursor(terminal_id="L1", search_id="1"))), \
+                 patch.object(EventsPoller, "start", fake_start):
+                sync_local_event_pollers({}, store, [self._terminal()], {}, make_client=MagicMock(return_value=client))
+            self.assertEqual(store.get_event_picture("ev1"), JPEG)
+        finally:
+            store.close()
+            for suffix in ("", "-wal", "-shm"):
+                if os.path.exists(path + suffix):
+                    os.remove(path + suffix)
 
 if __name__ == "__main__":
     unittest.main()

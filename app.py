@@ -16,6 +16,7 @@ load_dotenv()
 from gpiozero import OutputDevice, DigitalInputDevice
 
 from zaccess_client import start_zaccess_client_in_background, submit_controlid_event
+from local_event_pollers import start_local_event_pollers_in_background
 from config_env import read_config, get_config_for_display, write_config
 import face_terminals_store
 import vehicle_antennas_store
@@ -752,6 +753,8 @@ def api_restart():
 if __name__ == '__main__':
     # Conecta ao ZAccess; envia relés e estado dos sensores/botões (inputs)
     start_zaccess_client_in_background(reles, sensores=sensores, sensor_pins=SENSOR_PINS)
+    # Eventos/fotos dos terminais do cadastro local — sempre, com ou sem ZACCESS_SERVER_URL
+    start_local_event_pollers_in_background(local_store)
     # Painel local (porta do .env ou 3080)
     port_str = (os.environ.get("PORT") or "3080").strip()
     port = int(port_str) if port_str else 3080

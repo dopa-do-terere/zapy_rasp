@@ -29,11 +29,15 @@ DEFAULT_BIN_PATH = os.path.join(_REPO_DIR, "bin", "go2rtc.exe" if os.name == "nt
 
 # Substream por padrão (menos banda/CPU no Pi). Intelbras segue o padrão Dahua — a validar
 # na bancada; rtsp_path no cadastro do terminal sobrescreve.
-_DEFAULT_RTSP_PATHS = {
+DEFAULT_RTSP_PATHS = {
     "hikvision": "/Streaming/Channels/102",
     "intelbras": "/cam/realmonitor?channel=1&subtype=1",
     "intelbras_biot": "/cam/realmonitor?channel=1&subtype=1",
 }
+
+# Lista que o player e o "Testar vídeo" pedem ao go2rtc: só H.264 (sem áudio).
+H264_CODECS = "avc1.640029,avc1.64002A,avc1.640033,avc1.4D401F,avc1.42E01E"
+_AVC1 = re.compile(r"avc1\.[0-9A-Fa-f]{6}")
 
 UPSTREAM_IDLE_SECONDS = 15  # go2rtc sem mandar nada por isso: conexão morta, fecha
 _CLIENT_MAX_BYTES = 1024
@@ -47,7 +51,7 @@ _API_READY_ATTEMPTS = 25  # x 0.2s: go2rtc recém-iniciado demora um pouco pra a
 def build_rtsp_url(t: dict) -> str | None:
     """URL RTSP do terminal (com credencial — não logar), ou None se o fabricante não tem
     vídeo suportado (Control iD e outros)."""
-    default_path = _DEFAULT_RTSP_PATHS.get(t.get("vendor"))
+    default_path = DEFAULT_RTSP_PATHS.get(t.get("vendor"))
     if default_path is None:
         return None
     path = (t.get("rtsp_path") or "").strip() or default_path
@@ -234,6 +238,39 @@ class Go2rtcManager:
     def connect_ws(self, name: str):
         """WebSocket MSE do go2rtc pro stream `name` (já registrado via ensure_stream)."""
         return WsClient.connect(f"ws://127.0.0.1:{self.api_port}/api/ws?src={quote(name, safe='')}")
+
+    def test_stream(self, name: str, src: str, timeout: float = 10) -> dict:
+        """Teste do cadastro: registra, pede MSE H.264 e espera a 1a mensagem de texto.
+        Nunca devolve nem loga a URL (tem a senha)."""
+        self.ensure_stream(name, src)
+        ws = self.connect_ws(name)
+        try:
+            ws.send(json.dumps({"type": "mse", "value": H264_CODECS}))
+            deadline = time.monotonic() + timeout
+            while (left := deadline - time.monotonic()) > 0:
+                msg = ws.receive(timeout=left)
+                if msg is None:
+                    break
+                if not isinstance(msg, str):
+                    continue
+                try:
+                    parsed = json.loads(msg)
+                except ValueError:
+                    continue
+                if not isinstance(parsed, dict):
+                    continue
+                if parsed.get("type") == "mse":
+                    codec = _AVC1.search(str(parsed.get("value")))
+                    return {"ok": True, "codec": f"H.264 ({codec.group(0)})" if codec else scrub(parsed.get("value"))[:60]}
+                if parsed.get("type") == "error":
+                    logger.warning("live_video: teste do stream %s falhou - %s", name, scrub(parsed.get("value"))[:300])
+                    return {"ok": False, "message": classify_error(parsed.get("value") or "")}
+            return {"ok": False, "message": "sem resposta do terminal"}
+        finally:
+            try:
+                ws.close()
+            except Exception:
+                pass
 
     def stop(self) -> None:
         with self._lock:

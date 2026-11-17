@@ -30,6 +30,7 @@ _DEFAULTS = {
     # que sobrescreve o padrão do fabricante. Sem credencial aqui — vem de username/password.
     "rtsp_port": 554,
     "rtsp_path": "",
+    "live_enabled": True,  # vídeo ao vivo deste terminal no Cockpit
 }
 
 
@@ -57,7 +58,7 @@ def _normalize(data: dict, existing: dict | None = None) -> dict:
         value = data[field]
         if field in ("port", "rtsp_port"):
             value = int(value) if str(value).strip() else _DEFAULTS[field]
-        elif field in ("https", "verify_tls", "cockpit_enabled"):
+        elif field in ("https", "verify_tls", "cockpit_enabled", "live_enabled"):
             value = bool(value)
         elif field == "relay_level":
             value = 1 if int(value or 0) == 1 else 0

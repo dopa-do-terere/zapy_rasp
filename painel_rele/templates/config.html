@@ -81,6 +81,32 @@
         </div>
         <div class="msg" id="cockpitRelaysMsg"></div>
     </section>
+
+    <section class="panel">
+        <div class="panel-header">
+            <span class="panel-title">Vídeo ao vivo no Cockpit</span>
+            <span class="panel-sub">Terminais faciais do cadastro local</span>
+        </div>
+        <p class="panel-desc">
+            Vale na hora, sem reiniciar. Cada terminal também pode ser desligado em
+            <a href="/face-terminals">Terminais faciais</a> ("Vídeo ao vivo").
+        </p>
+        {% if not go2rtc_available %}
+        <p class="panel-desc" style="color:var(--destructive);">go2rtc não instalado — rode o install.sh de novo para habilitar o vídeo.</p>
+        {% endif %}
+        <div class="checks">
+            <label class="chk"><input type="checkbox" id="liveEnabled"{% if not go2rtc_available %} disabled{% endif %}> Vídeo ao vivo ativo</label>
+        </div>
+        <div class="field">
+            <label for="liveMaxViewers">Limite de visualizações simultâneas (0 = ilimitado)</label>
+            <input type="number" id="liveMaxViewers" min="0" step="1" placeholder="0"{% if not go2rtc_available %} disabled{% endif %}>
+            <p class="hint">Cada vídeo aberto conta, inclusive as miniaturas da lista do Cockpit.</p>
+        </div>
+        <div class="btn-row">
+            <button type="button" class="btn btn-primary" id="saveLive"{% if not go2rtc_available %} disabled{% endif %}>Salvar</button>
+        </div>
+        <div class="msg" id="liveMsg"></div>
+    </section>
 </div>
 {% endblock %}
 
@@ -194,6 +220,47 @@
                 else showCockpitMsg(o.json.message || 'Erro ao salvar.', true);
             })
             .catch(function() { showCockpitMsg('Erro de conexão.', true); })
+            .finally(function() { btn.disabled = false; });
+    });
+
+    // --- Vídeo ao vivo no Cockpit (ZAPY_LIVE_ENABLED / ZAPY_LIVE_MAX_VIEWERS) ---
+    var liveEnabled = document.getElementById('liveEnabled');
+    var liveMax = document.getElementById('liveMaxViewers');
+    var liveMsgEl = document.getElementById('liveMsg');
+
+    function showLiveMsg(text, isError) {
+        liveMsgEl.textContent = text;
+        liveMsgEl.className = 'msg ' + (isError ? 'error' : 'success');
+        liveMsgEl.style.display = 'block';
+        setTimeout(function() { liveMsgEl.style.display = 'none'; }, 5000);
+    }
+
+    fetch('/api/config')
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            liveEnabled.checked = (data.ZAPY_LIVE_ENABLED || '').trim() !== '0';
+            liveMax.value = (data.ZAPY_LIVE_MAX_VIEWERS || '').trim() || '0';
+        })
+        .catch(function() {});
+
+    document.getElementById('saveLive').addEventListener('click', function() {
+        var btn = this;
+        var max = parseInt(liveMax.value, 10);
+        btn.disabled = true;
+        fetch('/api/config', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                ZAPY_LIVE_ENABLED: liveEnabled.checked ? '1' : '0',
+                ZAPY_LIVE_MAX_VIEWERS: String(isNaN(max) || max < 0 ? 0 : max)
+            })
+        })
+            .then(function(r) { return r.json().then(function(j) { return { ok: r.ok, json: j }; }); })
+            .then(function(o) {
+                if (o.ok && o.json.success) showLiveMsg('Salvo — já vale nas próximas conexões de vídeo.');
+                else showLiveMsg(o.json.message || 'Erro ao salvar.', true);
+            })
+            .catch(function() { showLiveMsg('Erro de conexão.', true); })
             .finally(function() { btn.disabled = false; });
     });
 })();

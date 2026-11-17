@@ -24,7 +24,7 @@ import vehicle_antennas_store
 import users_store
 from face_agent import FaceProvisioningError, LocalStore, create_face_client
 from face_agent.controlid_uhf_client import ControlIdTerminal, ControlIdUhfClient
-from face_agent.live_video import Go2rtcManager, build_rtsp_url, proxy_live
+from face_agent.live_video import DEFAULT_RTSP_PATHS, Go2rtcManager, build_rtsp_url, proxy_live
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
@@ -63,6 +63,7 @@ local_store = LocalStore()
 live_video = Go2rtcManager()
 _live_lock = threading.Lock()
 _live_viewers = 0
+LIVE_TEST_TIMEOUT_SECONDS = 10
 
 EVENT_DIRECTION_LABEL = {"in": "Entrada", "out": "Saída", "unknown": "—"}
 
@@ -202,14 +203,14 @@ def index():
 @admin_required
 def config_page():
     """Tela dedicada de configuração do Zapy/ZAccess."""
-    return render_template('config.html')
+    return render_template('config.html', go2rtc_available=live_video.available)
 
 
 @app.route('/face-terminals')
 @admin_required
 def face_terminals_page():
     """Cadastro dos terminais faciais (Hikvision/Intelbras) que este zapy fala diretamente."""
-    return render_template('face_terminals.html')
+    return render_template('face_terminals.html', rtsp_defaults=DEFAULT_RTSP_PATHS)
 
 
 @app.route('/api/face-terminals', methods=['GET'])
@@ -240,6 +241,26 @@ def api_face_terminals_delete(terminal_id):
     if not face_terminals_store.delete_terminal(terminal_id):
         return jsonify({"success": False, "message": "terminal não encontrado"}), 404
     return jsonify({"success": True})
+
+
+@app.route('/api/face-terminals/<terminal_id>/live-test', methods=['POST'])
+@admin_required
+def api_face_terminals_live_test(terminal_id):
+    """"Testar vídeo": usa o cadastro salvo, pede MSE H.264 ao go2rtc e devolve o codec ou
+    o erro classificado. Nunca devolve nem loga a URL RTSP (tem a senha)."""
+    terminal = face_terminals_store.get_terminal(terminal_id)
+    if terminal is None:
+        return jsonify({"ok": False, "message": "terminal não encontrado"}), 404
+    src = build_rtsp_url(terminal)
+    if src is None:
+        return jsonify({"ok": False, "message": "fabricante sem vídeo ao vivo"})
+    if not live_video.available:
+        return jsonify({"ok": False, "message": "go2rtc não instalado"})
+    try:
+        return jsonify(live_video.test_stream(terminal_id, src, timeout=LIVE_TEST_TIMEOUT_SECONDS))
+    except Exception as e:
+        logging.error("live: falha no teste de vídeo do terminal %s - %s", terminal_id, type(e).__name__)
+        return jsonify({"ok": False, "message": "go2rtc não respondeu"})
 
 
 @app.route('/api/face-terminals/<terminal_id>/test', methods=['POST'])

@@ -2142,6 +2142,14 @@ class LiveWsRouteTest(unittest.TestCase):
     def test_4403_porteiro_without_cockpit(self):
         self.assertEqual(self._run(role="porteiro").closed_with[0], 4403)
 
+    def test_4403_live_disabled_globally_or_per_terminal(self):
+        os.environ["ZAPY_LIVE_ENABLED"] = "0"
+        self.assertEqual(self._run().closed_with[0], 4403)
+        os.environ["ZAPY_LIVE_ENABLED"] = "1"
+        face_terminals_store.update_terminal(self.terminal["id"], {"live_enabled": False})
+        self.assertEqual(self._run().closed_with[0], 4403)
+        self.manager.ensure_stream.assert_not_called()
+
     def test_4404_missing_terminal_rtsp_or_binary(self):
         self.assertEqual(self._run("nao-existe").closed_with[0], 4404)
         cid = face_terminals_store.create_terminal({"vendor": "controlid", "host": "192.0.2.6"})
@@ -2169,12 +2177,87 @@ class LiveWsRouteTest(unittest.TestCase):
         self.assertEqual(ws.closed_with[0], 1011)
         self.assertEqual(self.app_module._live_viewers, 0)
 
+    def _live_test(self, upstream_messages, timeout=None):
+        manager = Go2rtcManager(os.path.abspath(__file__))  # qualquer arquivo existente = "binário instalado"
+        upstream = FakeWs(upstream_messages, reply_after_send=True)
+        client = self.app_module.app.test_client()
+        with client.session_transaction() as sess:
+            sess["logged_in"] = True
+            sess["role"] = "admin"
+        with patch.object(manager, "ensure_stream") as ensure, patch.object(manager, "connect_ws", return_value=upstream), \
+             patch.object(self.app_module, "live_video", manager), \
+             patch.object(self.app_module, "LIVE_TEST_TIMEOUT_SECONDS", timeout or 2):
+            res = client.post(f"/api/face-terminals/{self.terminal['id']}/live-test")
+        return res, upstream, ensure
+
+    def test_live_test_ok_reports_codec(self):
+        res, upstream, ensure = self._live_test(['{"type":"mse","value":"video/mp4; codecs=\\"avc1.4d001f\\""}'])
+        self.assertEqual(res.get_json(), {"ok": True, "codec": "H.264 (avc1.4d001f)"})
+        sent = json.loads(upstream.sent[0])
+        self.assertEqual(sent["type"], "mse")
+        self.assertIn("avc1.4D401F", sent["value"])
+        self.assertIsNotNone(upstream.closed_with)
+        self.assertEqual(ensure.call_args.args[0], self.terminal["id"])
+
+    def test_live_test_error_is_classified_without_password(self):
+        res, upstream, _ = self._live_test(['{"type":"error","value":"rtsp://admin:pw@192.0.2.5/x wrong user/pass"}'])
+        body = res.get_json()
+        self.assertEqual(body, {"ok": False, "message": "falha de autenticacao RTSP"})
+        self.assertNotIn("pw", res.get_data(as_text=True))
+        self.assertIsNotNone(upstream.closed_with)
+
+    def test_live_test_timeout(self):
+        res, upstream, _ = self._live_test([], timeout=0.05)
+        self.assertEqual(res.get_json(), {"ok": False, "message": "sem resposta do terminal"})
+        self.assertIsNotNone(upstream.closed_with)
+
+    def test_live_test_requires_admin(self):
+        client = self.app_module.app.test_client()
+        with client.session_transaction() as sess:
+            sess["logged_in"] = True
+            sess["role"] = "porteiro"
+        res = client.post(f"/api/face-terminals/{self.terminal['id']}/live-test")
+        self.assertEqual(res.status_code, 302)
+
+    def test_config_and_terminal_pages_render(self):
+        client = self.app_module.app.test_client()
+        with client.session_transaction() as sess:
+            sess["logged_in"] = True
+            sess["role"] = "admin"
+        self.manager.available = False
+        html = client.get("/config").get_data(as_text=True)
+        self.assertIn("go2rtc não instalado", html)
+        self.assertIn('id="liveEnabled" disabled', html)
+        html = client.get("/face-terminals").get_data(as_text=True)
+        self.assertIn('"hikvision": "/Streaming/Channels/102"', html)
+
     def test_release_is_idempotent(self):
         release = self.app_module._acquire_live_slot()
         self.assertEqual(self.app_module._live_viewers, 1)
         release()
         release()
         self.assertEqual(self.app_module._live_viewers, 0)
+
+
+class LiveConfigTest(unittest.TestCase):
+    def test_allowed_keys(self):
+        import config_env
+        self.assertIn("ZAPY_LIVE_ENABLED", config_env.ALLOWED_KEYS)
+        self.assertIn("ZAPY_LIVE_MAX_VIEWERS", config_env.ALLOWED_KEYS)
+
+    def test_store_normalizes_live_enabled(self):
+        fd, path = tempfile.mkstemp(suffix=".json")
+        os.close(fd)
+        os.remove(path)
+        try:
+            with patch.object(face_terminals_store, "STORE_PATH", path):
+                t = face_terminals_store.create_terminal({"vendor": "hikvision", "host": "h"})
+                self.assertIs(t["live_enabled"], True)
+                t = face_terminals_store.update_terminal(t["id"], {"live_enabled": 0})
+                self.assertIs(t["live_enabled"], False)
+        finally:
+            if os.path.exists(path):
+                os.remove(path)
 
 
 class Go2rtcInstallScriptsTest(unittest.TestCase):

@@ -22,6 +22,10 @@ ALLOWED_KEYS = frozenset({
     # IDs de relé (CSV, ex.: "1,3,4") liberados pro porteiro abrir no /cockpit —
     # vazio/ausente = todos liberados (não restringe nada até o admin configurar).
     "COCKPIT_RELAYS",
+    # Vídeo ao vivo no Cockpit: "0" desliga (vazio = ativo); máximo de conexões abertas
+    # (0/vazio = ilimitado). Lidos do ambiente na hora — sem reiniciar.
+    "ZAPY_LIVE_ENABLED",
+    "ZAPY_LIVE_MAX_VIEWERS",
 })
 
 

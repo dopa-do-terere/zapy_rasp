@@ -22,6 +22,12 @@
     var container = document.getElementById('terminalsList');
     var emptyHint = document.getElementById('emptyHint');
     var terminals = [];
+    // Caminho RTSP padrão (substream) por fabricante — vem de face_agent/live_video.py.
+    var rtspDefaults = {{ rtsp_defaults|tojson }};
+
+    function rtspPlaceholder(vendor) {
+        return rtspDefaults[vendor] || 'sem vídeo ao vivo para este fabricante';
+    }
 
     function escapeHtml(s) {
         return String(s == null ? '' : s).replace(/[&<>"']/g, function(c) {
@@ -52,7 +58,7 @@
             '<div class="field"><label>Senha</label><input type="password" class="f-password" value="' + escapeHtml(t.password) + '" placeholder="' + (isNew ? '' : 'deixe em branco pra manter') + '"></div>' +
             '<div class="grid2">' +
                 '<div class="field"><label>Porta RTSP</label><input type="number" class="f-rtsp-port" value="' + (t.rtsp_port || 554) + '" min="1" max="65535"></div>' +
-                '<div class="field"><label>Caminho RTSP (opcional)</label><input class="f-rtsp-path" value="' + escapeHtml(t.rtsp_path || '') + '" placeholder="padrão do fabricante (substream)"></div>' +
+                '<div class="field"><label>Caminho RTSP (opcional)</label><input class="f-rtsp-path" value="' + escapeHtml(t.rtsp_path || '') + '" placeholder="' + escapeHtml(rtspPlaceholder(t.vendor)) + '"></div>' +
             '</div>' +
             '<div class="field relay-level-field" style="display:' + (isIntelbras ? 'block' : 'none') + '">' +
                 '<label>Nível do relé (Intelbras)</label>' +
@@ -71,10 +77,12 @@
                 '<label class="chk"><input type="checkbox" class="f-https"' + (t.https ? ' checked' : '') + '> HTTPS</label>' +
                 '<label class="chk"><input type="checkbox" class="f-verify"' + (t.verify_tls !== false ? ' checked' : '') + '> Validar certificado</label>' +
                 '<label class="chk"><input type="checkbox" class="f-cockpit"' + (t.cockpit_enabled !== false ? ' checked' : '') + '> Liberado pro porteiro (cockpit)</label>' +
+                '<label class="chk"><input type="checkbox" class="f-live"' + (t.live_enabled !== false ? ' checked' : '') + '> Vídeo ao vivo</label>' +
             '</div>' +
             '<div class="btn-row">' +
                 '<button type="button" class="btn btn-primary btn-save-terminal">Salvar</button>' +
                 '<button type="button" class="btn btn-outline btn-test-terminal"' + (isNew ? ' disabled title="Salve primeiro"' : '') + '>Testar conexão</button>' +
+                '<button type="button" class="btn btn-outline btn-test-live"' + (isNew ? ' disabled title="Salve primeiro"' : '') + '>Testar vídeo</button>' +
                 '<button type="button" class="btn btn-danger btn-remove-terminal">Remover</button>' +
             '</div>' +
             '<div class="msg test-result"></div>' +
@@ -103,6 +111,7 @@
             group_id: groupIdInput ? groupIdInput.value.trim() : '',
             rtsp_port: parseInt(card.querySelector('.f-rtsp-port').value, 10) || 554,
             rtsp_path: card.querySelector('.f-rtsp-path').value.trim(),
+            live_enabled: card.querySelector('.f-live').checked,
         };
     }
 
@@ -117,6 +126,7 @@
             var card = e.target.closest('.terminal-card');
             card.querySelector('.relay-level-field').style.display = e.target.value === 'intelbras' ? 'block' : 'none';
             card.querySelector('.controlid-group-field').style.display = e.target.value === 'controlid' ? 'block' : 'none';
+            card.querySelector('.f-rtsp-path').placeholder = rtspPlaceholder(e.target.value);
         }
     });
 
@@ -172,8 +182,26 @@
         }
     });
 
+    container.addEventListener('click', function(e) {
+        if (!e.target.classList.contains('btn-test-live')) return;
+        var card = e.target.closest('.terminal-card');
+        var id = card.getAttribute('data-id');
+        if (!id) return;
+        var resultEl = card.querySelector('.test-result');
+        e.target.disabled = true;
+        showResult(resultEl, 'Testando vídeo (até 10s)…', false);
+        fetch('/api/face-terminals/' + id + '/live-test', { method: 'POST' })
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+                if (data.ok) showResult(resultEl, 'Vídeo OK: ' + data.codec, false);
+                else showResult(resultEl, data.message || 'Vídeo indisponível.', true);
+            })
+            .catch(function() { showResult(resultEl, 'Erro de conexão.', true); })
+            .finally(function() { e.target.disabled = false; });
+    });
+
     document.getElementById('addTerminal').addEventListener('click', function() {
-        terminals.push({ id: '', name: '', vendor: 'hikvision', host: '', port: 80, username: '', password: '', https: false, verify_tls: true, cockpit_enabled: true, relay_level: 0, group_id: '', rtsp_port: 554, rtsp_path: '' });
+        terminals.push({ id: '', name: '', vendor: 'hikvision', host: '', port: 80, username: '', password: '', https: false, verify_tls: true, cockpit_enabled: true, relay_level: 0, group_id: '', rtsp_port: 554, rtsp_path: '', live_enabled: true });
         render();
     });
 

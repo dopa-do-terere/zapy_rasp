@@ -1886,9 +1886,9 @@ class LiveVideoUrlTest(unittest.TestCase):
         url = build_rtsp_url(self._t("hikvision", username="ad@m", password="p@ss:w/rd%1"))
         self.assertEqual(url, "rtsp://ad%40m:p%40ss%3Aw%2Frd%251@192.0.2.5:554/Streaming/Channels/102")
 
-    def test_controlid_and_unknown_have_no_url(self):
-        self.assertIsNone(build_rtsp_url(self._t("controlid")))
-        self.assertIsNone(build_rtsp_url(self._t("controlid", rtsp_path="/x")))
+    def test_controlid_main_stream_and_unknown_has_no_url(self):
+        self.assertEqual(build_rtsp_url(self._t("controlid")), "rtsp://admin:pw@192.0.2.5:554/main_stream")
+        self.assertEqual(build_rtsp_url(self._t("controlid", rtsp_path="/x")), "rtsp://admin:pw@192.0.2.5:554/x")
         self.assertIsNone(build_rtsp_url(self._t("outro")))
 
     def test_store_normalizes_rtsp_fields(self):
@@ -2169,8 +2169,8 @@ class LiveWsRouteTest(unittest.TestCase):
 
     def test_4404_missing_terminal_rtsp_or_binary(self):
         self.assertEqual(self._run("nao-existe").closed_with[0], 4404)
-        cid = face_terminals_store.create_terminal({"vendor": "controlid", "host": "192.0.2.6"})
-        self.assertEqual(self._run(cid["id"]).closed_with[0], 4404)
+        with patch.object(self.app_module, "build_rtsp_url", return_value=None):
+            self.assertEqual(self._run().closed_with[0], 4404)
         self.manager.available = False
         self.assertEqual(self._run().closed_with[0], 4404)
 
@@ -2305,7 +2305,9 @@ class CockpitLayoutTest(unittest.TestCase):
 
     def test_terminal_without_rtsp_renders_fallback(self):
         face_terminals_store.create_terminal({"vendor": "controlid", "host": "192.0.2.7", "name": "Catraca"})
-        html = self._html()
+        import app as app_module
+        with patch.object(app_module, "build_rtsp_url", return_value=None):
+            html = self._html()
         self.assertIn('id="stageFallback" class="live-fallback"', html)
         self.assertIn("Vídeo indisponível", html)
         self.assertIn("fabricante sem vídeo ao vivo", html)

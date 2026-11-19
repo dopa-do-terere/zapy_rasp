@@ -33,6 +33,10 @@ DEFAULT_RTSP_PATHS = {
     "hikvision": "/Streaming/Channels/102",
     "intelbras": "/cam/realmonitor?channel=1&subtype=1",
     "intelbras_biot": "/cam/realmonitor?channel=1&subtype=1",
+    # iDFace: RTSP vem desligado e em MJPEG. No terminal: onvif.rtsp_enabled=1,
+    # onvif.rtsp_codec=h264 (o player so toca H.264) e onvif.rtsp_username/rtsp_password
+    # iguais ao login cadastrado aqui; reiniciar o terminal depois.
+    "controlid": "/main_stream",
 }
 
 # Lista que o player e o "Testar vídeo" pedem ao go2rtc: só H.264 (sem áudio).
@@ -50,7 +54,7 @@ _API_READY_ATTEMPTS = 25  # x 0.2s: go2rtc recém-iniciado demora um pouco pra a
 
 def build_rtsp_url(t: dict) -> str | None:
     """URL RTSP do terminal (com credencial — não logar), ou None se o fabricante não tem
-    vídeo suportado (Control iD e outros)."""
+    vídeo suportado."""
     default_path = DEFAULT_RTSP_PATHS.get(t.get("vendor"))
     if default_path is None:
         return None

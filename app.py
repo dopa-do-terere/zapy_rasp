@@ -25,7 +25,7 @@ import vehicle_antennas_store
 import users_store
 from face_agent import FaceProvisioningError, LocalStore, create_face_client
 from face_agent.controlid_uhf_client import ControlIdTerminal, ControlIdUhfClient
-from face_agent.live_video import DEFAULT_RTSP_PATHS, Go2rtcManager, build_rtsp_url, proxy_live
+from face_agent.live_video import DEFAULT_RTSP_PATHS, Go2rtcManager, build_rtsp_url, proxy_live, scrub
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
@@ -247,6 +247,15 @@ def api_face_terminals_delete(terminal_id):
     return jsonify({"success": True})
 
 
+def _face_client_for(terminal: dict):
+    return create_face_client(
+        terminal["vendor"], host=terminal["host"], port=terminal["port"],
+        username=terminal["username"], password=terminal["password"],
+        https=terminal["https"], verify_tls=terminal["verify_tls"],
+        relay_level=terminal.get("relay_level", 0), group_id=terminal.get("group_id") or None,
+    )
+
+
 @app.route('/api/face-terminals/<terminal_id>/live-test', methods=['POST'])
 @admin_required
 def api_face_terminals_live_test(terminal_id):
@@ -260,6 +269,14 @@ def api_face_terminals_live_test(terminal_id):
         return jsonify({"ok": False, "message": "fabricante sem vídeo ao vivo"})
     if not live_video.available:
         return jsonify({"ok": False, "message": "go2rtc não instalado"})
+    if terminal.get("vendor") == "controlid":
+        # iDFace vem com RTSP desligado e em MJPEG: liga/ajusta pela API antes de testar.
+        try:
+            if _face_client_for(terminal).ensure_rtsp(terminal.get("rtsp_port") or 554):
+                return jsonify({"ok": False, "message": "vídeo ativado no terminal (RTSP H.264); "
+                                "ele está reiniciando, teste de novo em 1 minuto"})
+        except Exception as e:
+            logging.warning("live: não deu pra configurar o RTSP do Control iD %s - %s", terminal_id, scrub(str(e)))
     try:
         return jsonify(live_video.test_stream(terminal_id, src, timeout=LIVE_TEST_TIMEOUT_SECONDS))
     except Exception as e:
@@ -276,13 +293,7 @@ def api_face_terminals_test(terminal_id):
     if terminal is None:
         return jsonify({"success": False, "message": "terminal não encontrado"}), 404
     try:
-        client = create_face_client(
-            terminal["vendor"], host=terminal["host"], port=terminal["port"],
-            username=terminal["username"], password=terminal["password"],
-            https=terminal["https"], verify_tls=terminal["verify_tls"],
-            relay_level=terminal.get("relay_level", 0), group_id=terminal.get("group_id") or None,
-        )
-        return jsonify({"success": True, "info": client.check_health()})
+        return jsonify({"success": True, "info": _face_client_for(terminal).check_health()})
     except FaceProvisioningError as e:
         return jsonify({"success": False, "message": str(e)}), 502
     except Exception as e:

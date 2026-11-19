@@ -351,6 +351,37 @@ class ControlIdClient(_ControlIdBaseClient):
 
     # --- porta ---
 
+    def ensure_rtsp(self, rtsp_port: int = 554) -> bool:
+        """Deixa o RTSP do iDFace pronto pro vídeo ao vivo: ligado, em H.264 (o player só
+        toca H.264; de fábrica vem MJPEG) e com as mesmas credenciais do login cadastrado
+        (build_rtsp_url monta a URL com elas). Só grava e reinicia o terminal se algo
+        estiver diferente; a doc diz que essas chaves só valem depois do reinício.
+        Devolve True quando gravou e mandou reiniciar."""
+        wanted = {
+            "rtsp_enabled": "1",
+            "rtsp_codec": "h264",
+            "rtsp_port": str(int(rtsp_port or 554)),
+            "rtsp_username": self.terminal.username,
+            "rtsp_password": self.terminal.password,
+        }
+        res = self._call("/get_configuration.fcgi", json_body={"onvif": list(wanted)})
+        if not (200 <= res.status_code < 300):
+            raise FaceProvisioningError(f"get_configuration.fcgi retornou {res.status_code}: {res.text}")
+        try:
+            current = (res.json() or {}).get("onvif") or {}
+        except ValueError:
+            current = {}
+        # Chave que o firmware não devolve (a senha, em alguns) não conta como diferente.
+        if all(str(current[k]) == v for k, v in wanted.items() if k in current) and "rtsp_enabled" in current:
+            return False
+        res = self._call("/set_configuration.fcgi", json_body={"onvif": wanted})
+        if not (200 <= res.status_code < 300):
+            raise FaceProvisioningError(f"set_configuration.fcgi retornou {res.status_code}: {res.text}")
+        reboot = self.reboot_terminal()
+        if not reboot.get("ok"):
+            raise FaceProvisioningError(f"RTSP configurado, mas o reinício falhou: {reboot.get('reason')}")
+        return True
+
     def open_door(self, door: int = 1) -> dict:
         return self._execute_action("door", f"door={door}")
 

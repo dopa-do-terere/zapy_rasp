@@ -518,6 +518,31 @@ class ControlIdClientTest(unittest.TestCase):
         self.assertEqual(self._client().check_health()["serial"], "ABC123")
 
 
+class ControlIdRtspTest(unittest.TestCase):
+    LOGIN_OK = MagicMock(status_code=200, json=lambda: {"session": "s"})
+
+    def _client(self):
+        return ControlIdClient(ControlIdTerminal(host="10.0.0.4", port=80, username="admin", password="pw"))
+
+    @patch("face_agent.controlid_client.requests.post")
+    def test_already_ok_does_not_write_or_reboot(self, mock_post):
+        cfg = {"onvif": {"rtsp_enabled": "1", "rtsp_codec": "h264", "rtsp_port": "554", "rtsp_username": "admin"}}
+        mock_post.side_effect = [self.LOGIN_OK, MagicMock(status_code=200, json=lambda: cfg)]
+        self.assertFalse(self._client().ensure_rtsp(554))
+        self.assertEqual(mock_post.call_count, 2)
+
+    @patch("face_agent.controlid_client.requests.post")
+    def test_factory_default_is_configured_and_rebooted(self, mock_post):
+        cfg = {"onvif": {"rtsp_enabled": "0", "rtsp_codec": "mjpeg", "rtsp_port": "554", "rtsp_username": "", "rtsp_password": ""}}
+        mock_post.side_effect = [self.LOGIN_OK, MagicMock(status_code=200, json=lambda: cfg),
+                                 MagicMock(status_code=200, json=lambda: {}), MagicMock(status_code=200)]
+        self.assertTrue(self._client().ensure_rtsp(554))
+        paths = [c.args[0].rsplit("/", 1)[1] for c in mock_post.call_args_list]
+        self.assertEqual(paths, ["login.fcgi", "get_configuration.fcgi", "set_configuration.fcgi", "reboot.fcgi"])
+        self.assertEqual(mock_post.call_args_list[2].kwargs["json"], {"onvif": {
+            "rtsp_enabled": "1", "rtsp_codec": "h264", "rtsp_port": "554", "rtsp_username": "admin", "rtsp_password": "pw"}})
+
+
 class ControlIdUhfClientTest(unittest.TestCase):
     def _client(self):
         return ControlIdUhfClient(ControlIdTerminal(host="10.0.0.5", port=80, username="admin", password="pw"))
@@ -2227,6 +2252,20 @@ class LiveWsRouteTest(unittest.TestCase):
         res, upstream, _ = self._live_test([], timeout=0.05)
         self.assertEqual(res.get_json(), {"ok": False, "message": "sem resposta do terminal"})
         self.assertIsNotNone(upstream.closed_with)
+
+    def test_live_test_controlid_configures_rtsp_and_asks_retry(self):
+        face_terminals_store.update_terminal(self.terminal["id"], {"vendor": "controlid"})
+        fake = MagicMock()
+        fake.ensure_rtsp.return_value = True
+        with patch.object(self.app_module, "_face_client_for", return_value=fake):
+            res, _, ensure = self._live_test([])
+        self.assertFalse(res.get_json()["ok"])
+        self.assertIn("reiniciando", res.get_json()["message"])
+        ensure.assert_not_called()
+        fake.ensure_rtsp.return_value = False
+        with patch.object(self.app_module, "_face_client_for", return_value=fake):
+            res, _, _ = self._live_test(['{"type":"mse","value":"video/mp4; codecs=\\"avc1.4d001f\\""}'])
+        self.assertTrue(res.get_json()["ok"])
 
     def test_live_test_requires_admin(self):
         client = self.app_module.app.test_client()

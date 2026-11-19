@@ -493,11 +493,21 @@ class ControlIdClientTest(unittest.TestCase):
         self.assertEqual(result, {"ok": False, "reason": "falha de rede ao logar em 10.0.0.4: timeout"})
 
     @patch("face_agent.controlid_client.requests.post")
+    def test_open_door_idface_uses_sec_box(self, mock_post):
+        mock_post.side_effect = [self.LOGIN_OK,
+                                 MagicMock(status_code=200, json=lambda: {"doors": [], "sec_boxes": [{"id": 65793, "open": False}]}),
+                                 MagicMock(status_code=200, json=lambda: {})]
+        self.assertEqual(self._client().open_door(), {"ok": True})
+        self.assertEqual(mock_post.call_args_list[2].kwargs["json"],
+                         {"actions": [{"action": "sec_box", "parameters": "id=65793,reason=3"}]})
+
+    @patch("face_agent.controlid_client.requests.post")
     def test_open_door_sends_execute_actions(self, mock_post):
-        mock_post.side_effect = [self.LOGIN_OK, MagicMock(status_code=200, json=lambda: {"actions": []})]
+        mock_post.side_effect = [self.LOGIN_OK, MagicMock(status_code=200, json=lambda: {"doors": [{"id": 1}]}),
+                                 MagicMock(status_code=200, json=lambda: {"actions": []})]
         result = self._client().open_door()
         self.assertEqual(result, {"ok": True})
-        action_call = mock_post.call_args_list[1]
+        action_call = mock_post.call_args_list[2]
         self.assertEqual(action_call.kwargs["json"], {"actions": [{"action": "door", "parameters": "door=1"}]})
 
     @patch("face_agent.controlid_client.requests.post")

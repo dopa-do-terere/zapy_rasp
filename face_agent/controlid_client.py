@@ -383,6 +383,21 @@ class ControlIdClient(_ControlIdBaseClient):
         return True
 
     def open_door(self, door: int = 1) -> dict:
+        """iDFace/iDFlex não têm relé próprio: a fechadura fica no SecBox (módulo externo),
+        acionado por `sec_box`. `door=N` só serve pra quem tem relé interno (iDAccess,
+        iDFit, iDBox) — no iDFace ele volta 200 e não faz nada. doors_state.fcgi diz qual
+        dos dois o equipamento tem."""
+        sec_box_id = None
+        try:
+            res = self._call("/doors_state.fcgi", json_body={})
+            if 200 <= res.status_code < 300:
+                boxes = (res.json() or {}).get("sec_boxes") or []
+                if boxes:
+                    sec_box_id = boxes[0].get("id")
+        except Exception as e:
+            logger.warning("Control iD %s: doors_state falhou (%s); tentando relé interno", self.terminal.host, e)
+        if sec_box_id is not None:
+            return self._execute_action("sec_box", f"id={sec_box_id},reason=3")
         return self._execute_action("door", f"door={door}")
 
 

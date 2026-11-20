@@ -590,6 +590,8 @@ class ControlIdEventsTest(unittest.TestCase):
         self.assertEqual((events[1]["employee_no"], events[1]["success"]), (None, False))
         self.assertEqual([e["picture_url"] for e in events], [None, "last_snapshot"])
         self.assertEqual(cur.search_id, "503")
+        # 1763600000 = 2025-11-20T00:53:20 UTC no epoch; o terminal quis dizer 00:53:20 local.
+        self.assertEqual(events[0]["time"], "2025-11-20T00:53:20-03:00")
 
     @patch("face_agent.controlid_client.requests.post")
     def test_capture_snapshot_decodes_base64(self, mock_post):

@@ -414,7 +414,9 @@ def fetch_controlid_events_since(client, terminal_id: str, cursor: PollCursor) -
         events.append({
             "dedupe_key": f"{terminal_id}:controlid:{log['id']}", "terminal_id": terminal_id,
             "employee_no": employee_no,
-            "time": datetime.fromtimestamp(int(log["time"]), tz=timezone.utc).astimezone(_BRT).isoformat(),
+            # iDFace grava o relógio de parede local como se fosse UTC (visto em produção:
+            # passagem às 21:22 BRT chegou como epoch de 21:22 UTC).
+            "time": datetime.fromtimestamp(int(log["time"]), tz=timezone.utc).replace(tzinfo=_BRT).isoformat(),
             "direction": "unknown", "major_event_type": None, "minor_event_type": code, "success": success,
             "source": "poll", "picture_url": None, "raw": log, "device_name": name,
         })

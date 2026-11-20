@@ -107,7 +107,8 @@ def submit_controlid_event(terminal_id: str, payload: dict, remote_addr: str | N
             logger.warning("ZAccess: falha ao resolver registration do user_id %s em %s - %s", user_id, terminal_id, e)
 
     ts = payload.get("time")
-    time_iso = datetime.fromtimestamp(int(ts), timezone(timedelta(hours=-3))).isoformat() if ts is not None else \
+    # Control iD grava o relógio de parede local como epoch "UTC" (ver fetch_controlid_events_since).
+    time_iso = datetime.fromtimestamp(int(ts), timezone.utc).replace(tzinfo=timezone(timedelta(hours=-3))).isoformat() if ts is not None else \
         datetime.now(timezone(timedelta(hours=-3))).isoformat()
     # Sem id de log no payload documentado — dedupe best-effort por timestamp+user+evento,
     # mesmo espírito pragmático do "last N records" do Intelbras XPE (não é garantia

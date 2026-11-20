@@ -19,6 +19,7 @@ from simple_websocket import ConnectionClosed
 
 import face_terminals_store
 import notices_store
+import parcels_store
 import zaccess_client
 from local_event_pollers import sync_local_event_pollers
 import vehicle_antennas_store
@@ -2406,6 +2407,7 @@ class CockpitLayoutTest(unittest.TestCase):
         self.assertNotIn('"pw"', html)
         self.assertIn("live-player.js", html)
         self.assertIn('id="noticesList"', html)
+        self.assertIn('id="parcelsList"', html)
         self.assertIn('id="eventsList"', html)
 
     def test_terminal_without_rtsp_sends_reason_to_mosaic(self):
@@ -2561,6 +2563,73 @@ class PortariaNoticesTest(unittest.TestCase):
             self.assertEqual(client.post("/api/cockpit/notices/xyz/ack").status_code, 400)
             ack.return_value = False
             self.assertEqual(client.post("/api/cockpit/notices/" + "f" * 24 + "/ack").status_code, 503)
+
+
+class ParcelsTest(unittest.TestCase):
+    def setUp(self):
+        fd, self.path = tempfile.mkstemp(suffix=".json")
+        os.close(fd)
+        os.remove(self.path)
+        self.p = patch.object(parcels_store, "_PATH", self.path)
+        self.p.start()
+
+    def tearDown(self):
+        self.p.stop()
+        for f in (self.path, self.path + ".tmp"):
+            if os.path.exists(f):
+                os.remove(f)
+
+    def test_store_sync_upsert_and_delivered_leaves(self):
+        parcels_store.replace_all({
+            "parcels": [
+                {"id": "b" * 24, "unit": "102", "status": "waiting", "createdAt": "2026-11-20T10:00:00Z"},
+                {"id": "a" * 24, "unit": "101", "status": "waiting", "createdAt": "2026-11-19T10:00:00Z"},
+                {"id": "c" * 24, "unit": "103", "status": "delivered"},
+                {"bad": 1},
+            ],
+            "units": ["101", "102", 3],
+            "carriers": [{"value": "correios", "label": "Correios"}, "x"],
+        })
+        snap = parcels_store.snapshot()
+        self.assertEqual([p["id"][0] for p in snap["parcels"]], ["a", "b"])
+        self.assertEqual(snap["units"], ["101", "102"])
+        self.assertEqual(len(snap["carriers"]), 1)
+        parcels_store.upsert({"id": "d" * 24, "unit": "104", "status": "waiting", "createdAt": "2026-11-20T11:00:00Z"})
+        parcels_store.upsert({"id": "a" * 24, "unit": "101", "status": "delivered"})
+        self.assertEqual([p["id"][0] for p in parcels_store.snapshot()["parcels"]], ["b", "d"])
+
+    def test_cockpit_parcel_routes(self):
+        os.environ.setdefault("GPIOZERO_PIN_FACTORY", "mock")
+        with patch("face_agent.LocalStore", MagicMock()):
+            import app as app_module
+        client = app_module.app.test_client()
+        with client.session_transaction() as sess:
+            sess["logged_in"] = True
+            sess["role"] = "porteiro"
+            sess["username"] = "joao"
+        call = MagicMock(return_value={"success": True, "parcel": {"id": "f" * 24}})
+        with patch.dict(zaccess_client._bridge, {"parcel_call": call}):
+            r = client.post("/api/cockpit/parcels", json={"unit": " 101 ", "carrier": "shopee", "note": 5})
+            self.assertEqual(r.status_code, 200)
+            ev, payload = call.call_args[0]
+            self.assertEqual(ev, "parcel:create")
+            self.assertEqual(payload["unit"], "101")
+            self.assertEqual(payload["note"], "")
+            self.assertEqual(payload["by"], "joao")
+
+            url = "/api/cockpit/parcels/" + "f" * 24 + "/deliver"
+            self.assertEqual(client.post(url, json={"code": "12a456", "pickedUpBy": "Ana"}).status_code, 400)
+            self.assertEqual(client.post("/api/cockpit/parcels/xyz/deliver", json={"code": "123456"}).status_code, 400)
+            self.assertEqual(client.post(url, json={"code": "123456", "pickedUpBy": "Ana"}).status_code, 200)
+            self.assertEqual(call.call_args[0][0], "parcel:deliver")
+            self.assertEqual(call.call_args[0][1]["code"], "123456")
+
+            call.return_value = {"success": False, "message": "Codigo incorreto."}
+            r = client.post(url, json={"code": "000000", "pickedUpBy": "Ana"})
+            self.assertEqual(r.status_code, 400)
+            self.assertEqual(r.get_json()["message"], "Codigo incorreto.")
+            call.return_value = None
+            self.assertEqual(client.post(url, json={"code": "123456", "pickedUpBy": "Ana"}).status_code, 503)
 
 
 class SystemUpdateRouteTest(unittest.TestCase):

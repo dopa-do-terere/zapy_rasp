@@ -124,6 +124,17 @@
     }
     .btn-ack:disabled { opacity: 0.7; cursor: default; }
     .notice-err { font-size: 0.68rem; color: var(--destructive); }
+
+    /* --- encomendas --- */
+    .parcel-badge { width: 34px; height: 34px; border-radius: var(--radius-md); display: inline-flex; align-items: center; justify-content: center; font-weight: 800; font-size: 0.75rem; flex-shrink: 0; }
+    .notice-item.old { border-color: var(--destructive); }
+    .parcel-form { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 6px; margin-bottom: 10px; }
+    .parcel-form input, .parcel-form select, .parcel-deliver input {
+        width: 100%; padding: 7px 9px; border-radius: var(--radius-md); border: 1px solid var(--border);
+        background: transparent; color: inherit; font: 0.78rem var(--font-sans);
+    }
+    .parcel-deliver { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+    .parcel-deliver input { width: auto; flex: 1 1 90px; }
 </style>
 {% endblock %}
 
@@ -153,6 +164,27 @@
                 <p class="empty-hint" id="emptyHint" style="display:none;">Nenhum evento ainda.</p>
             </div>
             <a class="side-link" href="/eventos">Ver todos os eventos</a>
+        </div>
+
+        <div class="panel">
+            <div class="panel-header">
+                <span class="panel-title panel-title-row">{{ icons.users() }}Encomendas</span>
+                <span class="panel-sub" id="parcelsCount"></span>
+            </div>
+            <form id="parcelForm" class="parcel-form" autocomplete="off">
+                <input name="unit" list="parcelUnits" placeholder="Unidade" maxlength="50" required>
+                <datalist id="parcelUnits"></datalist>
+                <select name="carrier" id="parcelCarrier" required><option value="">Empresa…</option></select>
+                <input name="carrierName" id="parcelCarrierName" placeholder="Nome da empresa" maxlength="60" style="display:none;">
+                <input name="recipientName" placeholder="Destinatário" maxlength="120">
+                <input name="note" placeholder="Observação" maxlength="300">
+                <button type="submit" class="btn-ack">Registrar</button>
+            </form>
+            <div class="notice-err" id="parcelFormMsg"></div>
+            <div class="side-scroll">
+                <div id="parcelsList" class="notices-list"></div>
+                <p class="empty-hint" id="parcelsEmpty" style="display:none;">Nenhuma encomenda aguardando retirada.</p>
+            </div>
         </div>
 
         <div class="panel">
@@ -391,6 +423,90 @@
     }
     loadEvents();
     setInterval(loadEvents, 15000);
+
+    // --- encomendas (o codigo de retirada so o morador ve no app) ---
+    var parcelsList = document.getElementById('parcelsList');
+    var parcelForm = document.getElementById('parcelForm');
+    var parcelCarrier = document.getElementById('parcelCarrier');
+    var parcelCarrierName = document.getElementById('parcelCarrierName');
+    var parcelFormMsg = document.getElementById('parcelFormMsg');
+    var carriersLoaded = false;
+    function parcelDays(p) { return Math.floor((Date.now() - new Date(p.createdAt).getTime()) / 864e5); }
+    function renderParcels(j) {
+        var list = j.parcels || [];
+        if (!carriersLoaded && (j.carriers || []).length) {
+            carriersLoaded = true;
+            parcelCarrier.innerHTML = '<option value="">Empresa…</option>' + j.carriers.map(function(c) {
+                return '<option value="' + escapeHtml(c.value) + '">' + escapeHtml(c.label) + '</option>';
+            }).join('');
+        }
+        document.getElementById('parcelUnits').innerHTML = (j.units || []).map(function(u) {
+            return '<option value="' + escapeHtml(u) + '"></option>';
+        }).join('');
+        document.getElementById('parcelsEmpty').style.display = list.length ? 'none' : '';
+        document.getElementById('parcelsCount').textContent = list.length ? list.length + ' aguardando' : '';
+        parcelsList.innerHTML = list.map(function(p) {
+            var days = parcelDays(p);
+            var meta = 'Unidade ' + escapeHtml(p.unit) + (p.recipientName ? ' · para ' + escapeHtml(p.recipientName) : '') +
+                ' · ' + (days ? 'há ' + days + ' dia(s)' : 'hoje');
+            var auth = p.authorizedName ? '<div class="notice-meta">Autorizado a retirar: <b>' + escapeHtml(p.authorizedName) + '</b>' +
+                (p.authorizedDoc ? ' (' + escapeHtml(p.authorizedDoc) + ')' : '') + '</div>' : '';
+            var deliver = p.codeLocked
+                ? '<div class="notice-err">Código bloqueado após 5 tentativas: entregue pelo painel.</div>'
+                : '<form class="parcel-deliver" data-deliver="' + escapeHtml(p.id) + '">' +
+                  '<input name="code" inputmode="numeric" maxlength="6" placeholder="Código" required>' +
+                  '<input name="pickedUpBy" maxlength="120" placeholder="Quem retirou" value="' + escapeHtml(p.authorizedName || '') + '" required>' +
+                  '<button type="submit" class="btn-ack">Entregar</button><div class="notice-err"></div></form>';
+            return '<div class="notice-item' + (days >= 3 ? ' old' : ' pending') + '" style="justify-content:flex-start">' +
+                '<span class="parcel-badge" style="background:' + escapeHtml(p.carrierColor || '#6B7280') + ';color:' + escapeHtml(p.carrierFg || '#fff') + '">' + escapeHtml(p.carrierShort || '?') + '</span>' +
+                '<div class="notice-main" style="flex:1">' +
+                '<div class="notice-title">' + escapeHtml(p.carrierLabel || p.carrier) + '</div>' +
+                '<div class="notice-meta">' + meta + '</div>' + auth +
+                (p.note ? '<div class="notice-msg">' + escapeHtml(p.note) + '</div>' : '') + deliver +
+                '</div></div>';
+        }).join('');
+    }
+    function loadParcels() {
+        fetch('/api/cockpit/parcels').then(function(r) { return r.json(); }).then(renderParcels).catch(function() {});
+    }
+    function postJson(url, body) {
+        return fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+            .then(function(r) { return r.json(); });
+    }
+    parcelCarrier.addEventListener('change', function() {
+        parcelCarrierName.style.display = parcelCarrier.value === 'outro' ? '' : 'none';
+    });
+    parcelForm.addEventListener('submit', function(e) {
+        e.preventDefault();
+        var btn = parcelForm.querySelector('button');
+        var body = {};
+        new FormData(parcelForm).forEach(function(v, k) { body[k] = v; });
+        btn.disabled = true; parcelFormMsg.textContent = '';
+        postJson('/api/cockpit/parcels', body).then(function(j) {
+            btn.disabled = false;
+            if (j.success) { parcelForm.reset(); parcelCarrierName.style.display = 'none'; loadParcels(); }
+            else { parcelFormMsg.textContent = j.message || 'Falha.'; }
+        }).catch(function() { btn.disabled = false; parcelFormMsg.textContent = 'Falha.'; });
+    });
+    parcelsList.addEventListener('submit', function(e) {
+        var form = e.target.closest('[data-deliver]');
+        if (!form) return;
+        e.preventDefault();
+        var btn = form.querySelector('button');
+        var msg = form.querySelector('.notice-err');
+        btn.disabled = true; msg.textContent = '';
+        postJson('/api/cockpit/parcels/' + encodeURIComponent(form.getAttribute('data-deliver')) + '/deliver', {
+            code: form.elements.code.value.trim(), pickedUpBy: form.elements.pickedUpBy.value,
+        }).then(function(j) {
+            if (j.success) { loadParcels(); }
+            else { msg.textContent = j.message || 'Falha.'; btn.disabled = false; }
+        }).catch(function() { msg.textContent = 'Falha.'; btn.disabled = false; });
+    });
+    loadParcels();
+    setInterval(function() {
+        // nao recarrega enquanto o porteiro digita um codigo
+        if (!parcelsList.contains(document.activeElement)) loadParcels();
+    }, 15000);
 
     // --- comunicados dos moradores ---
     var noticesList = document.getElementById('noticesList');

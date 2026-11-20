@@ -54,3 +54,5 @@ face_agent.sqlite3*
 # Avisos dos moradores para a portaria (vem do ZAccess)
 notices.json
 notices.json.tmp
+parcels.json
+parcels.json.tmp

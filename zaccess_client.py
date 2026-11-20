@@ -15,6 +15,7 @@ import socketio
 
 import face_terminals_store
 import notices_store
+import parcels_store
 import vehicle_antennas_store
 from face_agent import (
     EventsPoller,
@@ -342,6 +343,33 @@ def run_zaccess_client(
             return True
 
         _bridge["ack_notice"] = _ack_notice
+
+        # ---- Encomendas (Cockpit) ----
+        @sio.on("parcels:sync", namespace=NAMESPACE)
+        def parcels_sync(data):
+            parcels_store.replace_all(data)
+
+        @sio.on("parcel:new", namespace=NAMESPACE)
+        def parcel_new(data):
+            parcels_store.upsert(data)
+
+        @sio.on("parcel:updated", namespace=NAMESPACE)
+        def parcel_updated(data):
+            parcels_store.upsert(data)
+
+        def _parcel_call(event: str, payload: dict):
+            """Pede ao ZAccess e espera a resposta (ack). None = sem conexão ou sem resposta."""
+            if not sio.connected:
+                return None
+            try:
+                r = sio.call(event, payload, namespace=NAMESPACE, timeout=10)
+            except Exception:  # TimeoutError do socketio ou queda no meio
+                return None
+            if isinstance(r, dict) and r.get("success") and isinstance(r.get("parcel"), dict):
+                parcels_store.upsert(r["parcel"])
+            return r if isinstance(r, dict) else None
+
+        _bridge["parcel_call"] = _parcel_call
         _bridge["connected"] = lambda: bool(sio.connected)
 
         @sio.on("device:config", namespace=NAMESPACE)

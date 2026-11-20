@@ -23,6 +23,7 @@ from local_event_pollers import start_local_event_pollers_in_background
 from config_env import read_config, get_config_for_display, write_config
 import face_terminals_store
 import notices_store
+import parcels_store
 import zaccess_client
 import vehicle_antennas_store
 import users_store
@@ -753,6 +754,56 @@ def api_cockpit_notice_ack(notice_id):
     if not ack or not ack(notice_id, session.get("username") or "Portaria"):
         return jsonify({"success": False, "message": "sem conexão com o ZAccess; tente de novo"}), 503
     return jsonify({"success": True})
+
+
+@app.route('/api/cockpit/parcels')
+@login_required
+def api_cockpit_parcels():
+    """Encomendas aguardando retirada, unidades do local e empresas (vindas do ZAccess)."""
+    return jsonify(parcels_store.snapshot())
+
+
+def _parcel_reply(event, payload):
+    call = zaccess_client._bridge.get("parcel_call")
+    r = call(event, payload) if call else None
+    if r is None:
+        return jsonify({"success": False, "message": "sem conexão com o ZAccess; tente de novo"}), 503
+    if not r.get("success"):
+        return jsonify({"success": False, "message": r.get("message") or "Falha."}), 400
+    return jsonify({"success": True, "parcel": r.get("parcel")})
+
+
+def _text(body, key, max_len):
+    v = body.get(key)
+    return v.strip()[:max_len] if isinstance(v, str) else ""
+
+
+@app.route('/api/cockpit/parcels', methods=['POST'])
+@login_required
+def api_cockpit_parcel_create():
+    """Porteiro registra a encomenda; o ZAccess gera o código e avisa a unidade."""
+    body = request.get_json(silent=True) or {}
+    return _parcel_reply("parcel:create", {
+        "unit": _text(body, "unit", 50), "carrier": _text(body, "carrier", 30),
+        "carrierName": _text(body, "carrierName", 60), "recipientName": _text(body, "recipientName", 120),
+        "note": _text(body, "note", 300), "by": session.get("username") or "Portaria",
+    })
+
+
+@app.route('/api/cockpit/parcels/<parcel_id>/deliver', methods=['POST'])
+@login_required
+def api_cockpit_parcel_deliver(parcel_id):
+    """Entrega com o código de retirada que o morador mostra no app."""
+    if not re.fullmatch(r"[0-9a-f]{24}", parcel_id or ""):
+        return jsonify({"success": False, "message": "encomenda inválida"}), 400
+    body = request.get_json(silent=True) or {}
+    code = _text(body, "code", 6)
+    if not re.fullmatch(r"\d{6}", code):
+        return jsonify({"success": False, "message": "O código tem 6 dígitos."}), 400
+    return _parcel_reply("parcel:deliver", {
+        "parcelId": parcel_id, "code": code, "pickedUpBy": _text(body, "pickedUpBy", 120),
+        "by": session.get("username") or "Portaria",
+    })
 
 
 @app.route('/api/cockpit/relays/<id>/open', methods=['POST'])

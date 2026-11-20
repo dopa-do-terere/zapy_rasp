@@ -303,8 +303,8 @@ def run_zaccess_client(
 
         def _sync_event_pollers():
             """(Re)inicia um EventsPoller por terminal facial configurado, parando os que
-            saíram da config (ex.: terminal removido no painel). Terminal sem poll (Control
-            iD, que manda evento por webhook) fica de fora — ver make_events_fetch."""
+            saíram da config (ex.: terminal removido no painel). Control iD entra por poll
+            de access_logs — ver make_events_fetch."""
             for tid in list(event_pollers.keys()):
                 if tid not in face_clients:
                     _, stop_evt = event_pollers.pop(tid)

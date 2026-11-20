@@ -22,6 +22,7 @@ from local_event_pollers import sync_local_event_pollers
 import vehicle_antennas_store
 from face_agent.errors import FaceProvisioningError
 from face_agent.events_poller import (
+    fetch_controlid_events_since,
     EventsPoller,
     _find_field_ci,
     _normalize_event,
@@ -559,6 +560,53 @@ class ControlIdRtspTest(unittest.TestCase):
         self.assertEqual(paths, ["login.fcgi", "get_configuration.fcgi", "set_configuration.fcgi", "reboot.fcgi"])
         self.assertEqual(mock_post.call_args_list[2].kwargs["json"], {"onvif": {
             "rtsp_enabled": "1", "rtsp_codec": "h264", "rtsp_port": "554", "rtsp_username": "admin", "rtsp_password": "pw"}})
+
+
+class ControlIdEventsTest(unittest.TestCase):
+    def _client(self):
+        c = MagicMock(spec=ControlIdClient)
+        c.latest_access_log_id.return_value = 500
+        c.get_user.return_value = {"registration": "123", "name": "Fulano"}
+        return c
+
+    def test_first_run_anchors_cursor_without_events(self):
+        c = self._client()
+        events, cur = fetch_controlid_events_since(c, "t1", PollCursor(terminal_id="t1"))
+        self.assertEqual(events, [])
+        self.assertEqual(cur.search_id, "500")
+        c.fetch_access_logs_after.assert_not_called()
+
+    def test_face_events_with_user_and_last_snapshot(self):
+        c = self._client()
+        c.fetch_access_logs_after.return_value = [
+            {"id": 501, "time": 1763600000, "event": 7, "user_id": 9, "portal_id": 1},
+            {"id": 502, "time": 1763600005, "event": 12, "user_id": 0, "portal_id": 1},  # web, ignorado
+            {"id": 503, "time": 1763600010, "event": 3, "user_id": 0, "portal_id": 1},
+        ]
+        events, cur = fetch_controlid_events_since(c, "t1", PollCursor(terminal_id="t1", search_id="500"))
+        c.fetch_access_logs_after.assert_called_once_with(500)
+        self.assertEqual([e["dedupe_key"] for e in events], ["t1:controlid:501", "t1:controlid:503"])
+        self.assertEqual((events[0]["employee_no"], events[0]["device_name"], events[0]["success"]), ("123", "Fulano", True))
+        self.assertEqual((events[1]["employee_no"], events[1]["success"]), (None, False))
+        self.assertEqual([e["picture_url"] for e in events], [None, "last_snapshot"])
+        self.assertEqual(cur.search_id, "503")
+
+    @patch("face_agent.controlid_client.requests.post")
+    def test_capture_snapshot_decodes_base64(self, mock_post):
+        mock_post.side_effect = [MagicMock(status_code=200, json=lambda: {"session": "s"}),
+                                 MagicMock(status_code=200, json=lambda: {"image_base64": base64.b64encode(JPEG).decode()})]
+        c = ControlIdClient(ControlIdTerminal(host="10.0.0.4", port=80, username="admin", password="pw"))
+        self.assertEqual(c.capture_snapshot(), JPEG)
+        self.assertEqual(mock_post.call_args_list[1].kwargs["json"]["frame_type"], "camera")
+
+    @patch("face_agent.controlid_client.requests.post")
+    def test_fetch_access_logs_query(self, mock_post):
+        mock_post.side_effect = [MagicMock(status_code=200, json=lambda: {"session": "s"}),
+                                 MagicMock(status_code=200, json=lambda: {"access_logs": [{"id": 8}, {"id": 7}]})]
+        c = ControlIdClient(ControlIdTerminal(host="10.0.0.4", port=80, username="admin", password="pw"))
+        self.assertEqual([l["id"] for l in c.fetch_access_logs_after(6)], [7, 8])
+        body = mock_post.call_args_list[1].kwargs["json"]
+        self.assertEqual(body["where"], {"access_logs": {"id": {">": 6}}})
 
 
 class ControlIdUhfClientTest(unittest.TestCase):
@@ -1726,8 +1774,8 @@ class MakeEventsFetchTest(unittest.TestCase):
                 self.assertIsNone(got[1]["picture"])
                 client.fetch_picture.assert_called_once_with("/pic/1")
 
-    def test_control_id_has_no_fetch(self):
-        self.assertIsNone(make_events_fetch(MagicMock(spec=ControlIdClient), "t1"))
+    def test_control_id_has_fetch(self):
+        self.assertIsNotNone(make_events_fetch(MagicMock(spec=ControlIdClient), "t1"))
 
 
 class LocalEventPollersTest(unittest.TestCase):
@@ -1763,10 +1811,9 @@ class LocalEventPollersTest(unittest.TestCase):
         self.assertEqual(make_client.call_args.args[0], "hikvision")
         self.assertEqual(make_client.call_args.kwargs["host"], "192.0.2.10")
 
-    def test_no_poller_for_control_id(self):
+    def test_poller_for_control_id(self):
         pollers, _, _ = self._sync({}, [self._terminal(vendor="controlid")], client=self._client(ControlIdClient))
-        self.assertEqual(pollers, {})
-        self.assertEqual(self.started, [])
+        self.assertEqual(list(pollers), ["L1"])
 
     def test_no_poller_when_server_has_same_host_port(self):
         server = {"srv1": self._client(host="192.0.2.10", port=80)}

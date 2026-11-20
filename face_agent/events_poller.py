@@ -19,6 +19,7 @@ from collections import deque
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
+from .controlid_client import ControlIdClient
 from .errors import FaceProvisioningError
 from .hikvision_client import HikvisionClient
 from .intelbras_biot_client import IntelbrasBioTClient
@@ -378,6 +379,53 @@ def _biot_record_to_event(terminal_id: str, item: dict) -> Optional[dict]:
     }
 
 
+# access_logs.event (doc Control iD, objetos/lista-de-objetos): 3 = não identificado,
+# 6 = acesso negado, 7 = acesso concedido. Os outros (10/12 abertura pela API/web,
+# 11 botoeira...) não são reconhecimento: o Cockpit já grava a própria linha.
+_CONTROLID_FACE_EVENTS = {3, 6, 7}
+
+
+def fetch_controlid_events_since(client, terminal_id: str, cursor: PollCursor) -> tuple[list[dict], PollCursor]:
+    """Poll de access_logs por id crescente (sem depender de configurar Monitor/modo online
+    no terminal). Foto: get_last_snapshot (foto da última identificação) só no evento mais
+    recente do lote — os anteriores ficam com a foto do cadastro, se houver.
+    ponytail: com mais de um rosto por ciclo de poll só o último ganha a captura; trocar
+    por Monitor (access_photo) se isso incomodar."""
+    last_id = int(cursor.search_id) if cursor.search_id is not None else None
+    if last_id is None:
+        # Primeira execução: ancora no último log, não importa o histórico todo.
+        return [], PollCursor(terminal_id=terminal_id, last_event_time=cursor.last_event_time,
+                              search_id=str(client.latest_access_log_id()))
+    logs = client.fetch_access_logs_after(last_id)
+    users: dict = {}
+    events = []
+    for log in logs:
+        code = int(log.get("event") or 0)
+        if code not in _CONTROLID_FACE_EVENTS:
+            continue
+        success = code == 7
+        employee_no = name = None
+        uid = int(log.get("user_id") or 0)
+        if uid and code in (6, 7):
+            if uid not in users:
+                users[uid] = client.get_user(uid) or {}
+            employee_no = users[uid].get("registration") or None
+            name = users[uid].get("name") or None
+        events.append({
+            "dedupe_key": f"{terminal_id}:controlid:{log['id']}", "terminal_id": terminal_id,
+            "employee_no": employee_no,
+            "time": datetime.fromtimestamp(int(log["time"]), tz=timezone.utc).astimezone(_BRT).isoformat(),
+            "direction": "unknown", "major_event_type": None, "minor_event_type": code, "success": success,
+            "source": "poll", "picture_url": None, "raw": log, "device_name": name,
+        })
+    if events:
+        events[-1]["picture_url"] = "last_snapshot"
+    max_id = max([int(l["id"]) for l in logs], default=last_id)
+    return events, PollCursor(terminal_id=terminal_id,
+                              last_event_time=events[-1]["time"] if events else cursor.last_event_time,
+                              search_id=str(max_id))
+
+
 # --- loop de poll por terminal ---
 
 # Nome não encontrado no device é reconsultado depois disso (pessoa cadastrada depois
@@ -387,7 +435,7 @@ _NAME_MISS_TTL_SECONDS = 600
 
 def make_events_fetch(client, terminal_id: str, clock=time.monotonic):
     """Monta o `fetch` do EventsPoller pro tipo de client — ou None se o terminal não
-    é varrido por poll (Control iD manda evento por webhook). Hikvision usa AcsEvent;
+    é varrido por poll. Hikvision usa AcsEvent;
     Intelbras XPE só tem doorlog; Intelbras Bio-T/SS usa recordFinder.cgi — três
     protocolos, mesma assimetria do plano de integração facial (seção 6.3). Os três
     expõem URL de foto por evento (fetch_picture) — Hikvision só em match bem-sucedido
@@ -399,6 +447,9 @@ def make_events_fetch(client, terminal_id: str, clock=time.monotonic):
     elif isinstance(client, IntelbrasBioTClient):
         def fetch_raw(cursor):
             return fetch_intelbras_biot_events_since(client, terminal_id, cursor)
+    elif isinstance(client, ControlIdClient):
+        def fetch_raw(cursor):
+            return fetch_controlid_events_since(client, terminal_id, cursor)
     elif isinstance(client, IntelbrasClient):
         # Direção fixa "unknown": FaceTerminal ainda não tem esse campo no servidor.
         def fetch_raw(cursor):

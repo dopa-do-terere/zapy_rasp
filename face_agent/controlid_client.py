@@ -21,6 +21,7 @@ ao lado de `cards`/`qrcodes`), então não é um protocolo diferente por
 fabricante (diferente do caso Intelbras XPE vs. Bio-T, que são de fato dois
 protocolos distintos) — só um objeto e umas ações diferentes.
 """
+import base64
 import logging
 import time
 from dataclasses import dataclass
@@ -350,6 +351,67 @@ class ControlIdClient(_ControlIdBaseClient):
             raise FaceProvisioningError(f"falha ao apagar cartão {card_no} de {employee_no} em {self.terminal.host} ({res.status_code}): {res.text}")
 
     # --- porta ---
+
+    # --- eventos (poll de access_logs) e fotos ---
+
+    def _load(self, body: dict) -> list:
+        res = self._call("/load_objects.fcgi", json_body=body)
+        if not (200 <= res.status_code < 300):
+            raise FaceProvisioningError(f"load_objects({body.get('object')}) em {self.terminal.host} retornou {res.status_code}: {res.text}")
+        try:
+            return (res.json() or {}).get(body["object"]) or []
+        except ValueError:
+            raise FaceProvisioningError(f"resposta não-JSON de load_objects em {self.terminal.host}: {res.text}")
+
+    def latest_access_log_id(self) -> int:
+        logs = self._load({"object": "access_logs", "fields": ["id"], "order": ["id", "descending"], "limit": 1})
+        return int(logs[0]["id"]) if logs else 0
+
+    def fetch_access_logs_after(self, last_id: int, limit: int = 100) -> list[dict]:
+        """access_logs com id > last_id, do mais antigo pro mais novo (doc: objetos/
+        carregar-objetos e lista-de-objetos). Campos usados: id, time, event, user_id, portal_id."""
+        logs = self._load({
+            "object": "access_logs", "fields": ["id", "time", "event", "user_id", "portal_id"],
+            "where": {"access_logs": {"id": {">": int(last_id)}}}, "order": ["id", "ascending"], "limit": limit,
+        })
+        return sorted(logs, key=lambda l: int(l["id"]))
+
+    def get_user(self, user_id: int) -> dict | None:
+        """{registration, name} do usuário interno do terminal (access_logs só traz user_id)."""
+        users = self._load({"object": "users", "fields": ["registration", "name"], "where": {"users": {"id": int(user_id)}}})
+        return users[0] if users else None
+
+    def get_last_snapshot(self) -> bytes | None:
+        """Foto da última identificação (doc: captura-de-camera, GET get_last_snapshot.fcgi,
+        V6-V8) — JPEG em base64. Não tira foto nova."""
+        try:
+            if self._session is None:
+                self._login()
+            res = requests.get(self._base_url() + "/get_last_snapshot.fcgi", params={"session": self._session},
+                               verify=self.terminal.verify_tls, timeout=REQUEST_TIMEOUT_SECONDS)
+            if not (200 <= res.status_code < 300):
+                self._login()
+                res = requests.get(self._base_url() + "/get_last_snapshot.fcgi", params={"session": self._session},
+                                   verify=self.terminal.verify_tls, timeout=REQUEST_TIMEOUT_SECONDS)
+            b64 = (res.json() or {}).get("image_base64") if 200 <= res.status_code < 300 else None
+            return base64.b64decode(b64) if b64 else None
+        except Exception as e:
+            logger.warning("Control iD %s: get_last_snapshot falhou - %s", self.terminal.host, e)
+            return None
+
+    def capture_snapshot(self) -> bytes | None:
+        """Foto AO VIVO da câmera RGB (doc: save_screenshot.fcgi, V6-V8) — usada quando a
+        porta é aberta pelo Cockpit, que não tem foto de identificação."""
+        try:
+            res = self._call("/save_screenshot.fcgi", json_body={"frame_type": "camera", "camera": "rgb", "format_type": "base64"})
+            b64 = (res.json() or {}).get("image_base64") if 200 <= res.status_code < 300 else None
+            return base64.b64decode(b64) if b64 else None
+        except Exception as e:
+            logger.warning("Control iD %s: save_screenshot falhou - %s", self.terminal.host, e)
+            return None
+
+    def fetch_picture(self, ref: str) -> bytes | None:
+        return self.get_last_snapshot() if ref == "last_snapshot" else None
 
     def ensure_rtsp(self, rtsp_port: int = 554) -> bool:
         """Deixa o RTSP do iDFace pronto pro vídeo ao vivo: ligado, em H.264 (o player só

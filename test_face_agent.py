@@ -499,7 +499,15 @@ class ControlIdClientTest(unittest.TestCase):
                                  MagicMock(status_code=200, json=lambda: {})]
         self.assertEqual(self._client().open_door(), {"ok": True})
         self.assertEqual(mock_post.call_args_list[2].kwargs["json"],
-                         {"actions": [{"action": "sec_box", "parameters": "id=65793,reason=3"}]})
+                         {"actions": [{"action": "sec_box", "parameters": "id=65793, reason=3"}]})
+
+    @patch("face_agent.controlid_client.requests.post")
+    def test_open_door_doors_state_error_falls_back_to_sec_box(self, mock_post):
+        mock_post.side_effect = [self.LOGIN_OK,
+                                 MagicMock(status_code=200, json=lambda: {"error": "Fail to retrieve doors states", "code": 1}),
+                                 MagicMock(status_code=200, json=lambda: {})]
+        self.assertEqual(self._client().open_door(), {"ok": True})
+        self.assertEqual(mock_post.call_args_list[2].kwargs["json"]["actions"][0]["action"], "sec_box")
 
     @patch("face_agent.controlid_client.requests.post")
     def test_open_door_sends_execute_actions(self, mock_post):

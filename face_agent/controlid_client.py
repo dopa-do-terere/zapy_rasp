@@ -31,7 +31,7 @@ from .errors import FaceProvisioningError
 
 logger = logging.getLogger(__name__)
 
-MAX_IMAGE_BYTES = 2 * 1024 * 1024  # limite documentado do user_set_image.fcgi
+MAX_IMAGE_BYTES = 1024 * 1024 - 1  # doc do user_set_image.fcgi: "menor que 1MB"
 REQUEST_TIMEOUT_SECONDS = 10
 
 
@@ -383,29 +383,29 @@ class ControlIdClient(_ControlIdBaseClient):
         return True
 
     def open_door(self, door: int = 1) -> dict:
-        """iDFace/iDFlex não têm relé próprio: a fechadura fica no SecBox (módulo externo),
-        acionado por `sec_box`. `door=N` só serve pra quem tem relé interno (iDAccess,
-        iDFit, iDBox) — no iDFace ele volta 200 e não faz nada. doors_state.fcgi diz qual
-        dos dois o equipamento tem."""
-        sec_box_id = None
+        """iDFace/iDFlex não têm relé próprio: a fechadura fica no SecBox (MAE, módulo
+        externo), acionado por `sec_box`. `door=N` só serve pra quem tem relé interno
+        (iDAccess, iDFit, iDBox) — no iDFace ele volta 200 e não faz nada. doors_state.fcgi
+        diz qual dos dois o equipamento tem; se ele falhar (no V8 sem nada detectado vem
+        "Fail to retrieve doors states"), usa sec_box com o id padrão da doc (65793), já
+        que todo terminal facial da linha usa SecBox."""
+        state: dict = {}
         try:
             res = self._call("/doors_state.fcgi", json_body={})
             if 200 <= res.status_code < 300:
-                boxes = (res.json() or {}).get("sec_boxes") or []
-                if boxes:
-                    sec_box_id = boxes[0].get("id")
+                state = res.json() or {}
         except Exception as e:
-            logger.warning("Control iD %s: doors_state falhou (%s); tentando relé interno", self.terminal.host, e)
-        if sec_box_id is not None:
-            return self._execute_action("sec_box", f"id={sec_box_id},reason=3")
-        return self._execute_action("door", f"door={door}")
-
+            logger.warning("Control iD %s: doors_state falhou (%s)", self.terminal.host, e)
+        if state.get("doors") and not state.get("sec_boxes"):
+            return self._execute_action("door", f"door={door}")
+        boxes = state.get("sec_boxes") or [{"id": 65793}]
+        return self._execute_action("sec_box", f"id={boxes[0].get('id', 65793)}, reason=3")
 
 def _validate_image(image: bytes) -> None:
     if len(image) == 0:
         raise FaceProvisioningError("imagem vazia")
     if len(image) > MAX_IMAGE_BYTES:
-        raise FaceProvisioningError(f"imagem de {len(image)} bytes excede o limite do terminal ({MAX_IMAGE_BYTES} bytes / 2MB)")
+        raise FaceProvisioningError(f"imagem de {len(image)} bytes excede o limite do terminal (menor que 1MB)")
     is_jpeg = len(image) > 3 and image[0] == 0xFF and image[1] == 0xD8 and image[-2] == 0xFF and image[-1] == 0xD9
     is_png = image[:8] == b"\x89PNG\r\n\x1a\n"
     if not (is_jpeg or is_png):

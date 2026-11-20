@@ -79,7 +79,9 @@ TS="$(date +%Y%m%d-%H%M%S)"
 mkdir -p ~/zapy-backups
 OLDS="${OLD:0:7}"; OLDS="${OLDS:-semgit}"
 BK=~/zapy-backups/zapy-$TS-$OLDS.tgz
-tar czf "$BK" --exclude=.venv --exclude=__pycache__ --exclude=bin .
+# GNU tar sai com 1 quando um arquivo muda durante a leitura (sqlite do servico rodando);
+# o backup continua valido para o resto, entao so 2+ e erro de verdade.
+tar czf "$BK" --exclude=.venv --exclude=__pycache__ --exclude=bin . || [ $? -eq 1 ]
 chmod 600 "$BK"
 echo "[zapy] backup: $BK"
 

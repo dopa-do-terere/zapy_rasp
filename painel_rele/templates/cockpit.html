@@ -368,13 +368,16 @@
         return isNaN(d.getTime()) ? iso : d.toLocaleString('pt-BR');
     }
     function rowHtml(e) {
+        var door = e.kind === 'door';
         var photo = e.hasPhoto
             ? '<img class="event-photo" src="/api/events/' + encodeURIComponent(e.dedupeKey) + '/photo" alt="">'
-            : '<div class="event-photo placeholder">' + (e.success ? '?' : '✕') + '</div>';
+            : '<div class="event-photo placeholder">' + (door ? '&#9635;' : (e.success ? '?' : '&#10005;')) + '</div>';
+        var title = door ? e.terminalName : (e.name || e.employeeNo || 'Desconhecido');
+        var meta = door ? (e.name || '') : e.terminalName;
         return '<div class="event-row">' + photo +
-            '<div class="event-info"><div class="event-name">' + escapeHtml(e.name || e.employeeNo || 'Desconhecido') + '</div>' +
-            '<div class="event-meta">' + escapeHtml(e.terminalName) + ' · ' + escapeHtml(fmtTime(e.time)) + '</div></div>' +
-            '<span class="badge ' + (e.success ? 'success' : 'fail') + '">' + (e.success ? 'Liberado' : 'Negado') + '</span></div>';
+            '<div class="event-info"><div class="event-name">' + escapeHtml(title) + '</div>' +
+            '<div class="event-meta">' + escapeHtml(meta) + ' · ' + escapeHtml(fmtTime(e.time)) + '</div></div>' +
+            '<span class="badge ' + (e.success ? 'success' : 'fail') + '">' + escapeHtml(e.label || (e.success ? 'Liberado' : 'Negado')) + '</span></div>';
     }
     function loadEvents() {
         fetch('/api/events?page=1&pageSize=15')

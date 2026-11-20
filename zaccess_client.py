@@ -351,12 +351,18 @@ def run_zaccess_client(
                 rid = r.get("id")
                 if ch is not None and rid is not None:
                     relay_id_by_channel[int(ch)] = str(rid)
+            for r in data.get("relays") or []:
+                if r.get("channel") is not None and r.get("name"):
+                    local_store.set_terminal_name(f"door:{r['channel']}", str(r["name"]))
             input_id_by_gpio.clear()
+            sid_by_gpio = {pin: sid for sid, pin in (sensor_pins or {}).items()}
             for i in data.get("inputs") or []:
                 gpio = i.get("gpioPin")
                 iid = i.get("id")
                 if gpio is not None and iid is not None:
                     input_id_by_gpio[int(gpio)] = str(iid)
+                    if i.get("name") and int(gpio) in sid_by_gpio:
+                        local_store.set_terminal_name(f"sensor:{sid_by_gpio[int(gpio)]}", str(i["name"]))
 
             face_clients.clear()
             for t in data.get("faceTerminals") or []:
@@ -415,8 +421,14 @@ def run_zaccess_client(
                         continue
                     iid = str(input_id)
                     try:
-                        dev.when_activated = lambda i=iid: _emit_input_state(i, "inactive")
-                        dev.when_deactivated = lambda i=iid: _emit_input_state(i, "active")
+                        # Mantém o registro local (painel de Eventos) além de avisar o ZAccess.
+                        def _changed(i, state, sensor_id=sid, closed=None):
+                            _emit_input_state(i, state)
+                            hook = _bridge.get("on_sensor")
+                            if hook:
+                                hook(sensor_id, closed)
+                        dev.when_activated = lambda i=iid, s_=sid: _changed(i, "inactive", s_, True)
+                        dev.when_deactivated = lambda i=iid, s_=sid: _changed(i, "active", s_, False)
                     except Exception as e:
                         logger.debug("ZAccess: callback input %s - %s", sid, e)
 
@@ -455,6 +467,9 @@ def run_zaccess_client(
                         pass
                 logger.info("ZAccess: relé canal %s -> closed (fim do pulso)", channel)
 
+            if target_state == "open" and _bridge.get("on_relay"):
+                who = data.get("userName")
+                _bridge["on_relay"](key, f"Aberta pelo ZAccess ({who})" if who else "Aberta pelo ZAccess (app, painel ou automação)")
             if mode == "pulse" and target_state == "open":
                 with pulse_timers_lock:
                     old = pulse_timers.pop(key, None)

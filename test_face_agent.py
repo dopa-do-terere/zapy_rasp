@@ -2638,3 +2638,56 @@ class SystemUpdateRouteTest(unittest.TestCase):
         with self.client.session_transaction() as sess:
             sess["role"] = "porteiro"
         self.assertEqual(self.client.post("/api/system/update").status_code, 302)
+
+
+class DoorEventsTest(unittest.TestCase):
+    def setUp(self):
+        os.environ.setdefault("GPIOZERO_PIN_FACTORY", "mock")
+        with patch("face_agent.LocalStore", MagicMock()):
+            import app as app_module
+        self.m = app_module
+        fd, self.db = tempfile.mkstemp(suffix=".sqlite3")
+        os.close(fd)
+        self.store = LocalStore(self.db)
+        self.p = patch.object(app_module, "local_store", self.store)
+        self.p.start()
+        self.m._sensor_state.clear()
+
+    def tearDown(self):
+        self.p.stop()
+        for f in (self.db, self.db + "-wal", self.db + "-shm"):
+            if os.path.exists(f):
+                os.remove(f)
+
+    def _events(self):
+        events, _ = self.store.query_events(limit=50)
+        names = self.m._resolve_terminal_names()
+        return [self.m._event_to_dict(e, names) for e in events]
+
+    def test_sensor_logs_only_real_changes(self):
+        self.m._sensor_state["1"] = True  # estado inicial: porta fechada
+        self.m._sensor_changed("1", True)   # repetido: nada
+        self.m._sensor_changed("1", False)  # abriu
+        self.m._sensor_changed("1", False)  # repetido
+        self.m._sensor_changed("5", True)   # botão apertado
+        self.m._sensor_changed("5", False)  # botão solto: não registra
+        ev = self._events()
+        self.assertEqual(len(ev), 2)
+        by_tid = {e["terminalId"]: e for e in ev}
+        self.assertEqual(by_tid["sensor:1"]["label"], "Aberta")
+        self.assertEqual(by_tid["sensor:1"]["terminalName"], "Sensor de porta 1")
+        self.assertEqual(by_tid["sensor:5"]["name"], "Botão pressionado")
+        self.assertEqual(by_tid["sensor:5"]["terminalName"], "Botão 5")
+        self.assertTrue(all(e["kind"] == "door" and not e["hasPhoto"] for e in ev))
+
+    def test_cockpit_relay_open_is_logged(self):
+        client = self.m.app.test_client()
+        with client.session_transaction() as sess:
+            sess["logged_in"] = True
+            sess["role"] = "admin"
+            sess["username"] = "joao"
+        with patch.dict(os.environ, {"PULSE_RELE_1": "0"}):
+            self.assertEqual(client.post("/api/cockpit/relays/1/open").status_code, 200)
+        ev = self._events()
+        self.assertEqual(len(ev), 1)
+        self.assertEqual((ev[0]["terminalName"], ev[0]["name"], ev[0]["label"]), ("Porta 1", "Aberta pelo Cockpit (joao)", "Acionada"))

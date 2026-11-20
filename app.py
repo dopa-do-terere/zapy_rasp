@@ -150,6 +150,39 @@ except Exception as e:
     logging.warning("Sensores GPIO não inicializados (%s). Use modo mock. Verifique permissões (gpio, root) ou pin factory.", e)
     sensores = {id: _MockSensor() for id in SENSOR_PINS}
 
+# ---- Eventos de porta (relé acionado, sensor de porta, botão) no painel de Eventos ----
+DOOR_EVENT_SOURCES = ("door", "sensor")
+_BUTTON_SENSORS = {"5", "6", "7", "8"}  # 1–4 = reed switch de porta; 5–8 = botões
+_sensor_state: dict[str, bool] = {}
+
+
+def _log_local_event(kind: str, ref: str, text: str, success: bool = True) -> None:
+    """Grava no mesmo log dos reconhecimentos (terminal_id "door:N" / "sensor:N")."""
+    now = datetime.now(timezone(timedelta(hours=-3)))
+    try:
+        local_store.add_events([{
+            "dedupe_key": f"{kind}:{ref}:{now.strftime('%Y%m%dT%H%M%S%f')}",
+            "terminal_id": f"{kind}:{ref}", "employee_no": None, "time": now.isoformat(),
+            "direction": "unknown", "success": success, "source": kind,
+            "picture": None, "device_name": text[:120],
+        }])
+    except Exception:
+        logging.exception("evento de porta não gravado (%s:%s)", kind, ref)
+
+
+def _sensor_changed(sid: str, contact_closed: bool) -> None:
+    """GPIO com pull-up: ativado = contato fechado (reed: porta fechada; botão: apertado).
+    Só registra mudança de verdade (ignora repetição do mesmo estado)."""
+    if _sensor_state.get(sid) == contact_closed:
+        return
+    _sensor_state[sid] = contact_closed
+    if sid in _BUTTON_SENSORS:
+        if contact_closed:
+            _log_local_event("sensor", sid, "Botão pressionado")
+        return
+    _log_local_event("sensor", sid, "Porta fechada" if contact_closed else "Porta aberta", success=contact_closed)
+
+
 # Timers de pulso por relé (id -> threading.Timer) para cancelar se acionar de novo
 _pulse_timers: dict[str, threading.Timer] = {}
 _timers_lock = threading.Lock()
@@ -563,6 +596,12 @@ def _resolve_terminal_names() -> dict[str, str]:
     local_names = {t["id"]: (t.get("name") or t["id"]) for t in face_terminals_store.list_terminals()}
     local_names.update({a["id"]: (a.get("name") or a["id"]) for a in vehicle_antennas_store.list_antennas()})
     ids = set(local_store.list_event_terminal_ids()) | set(local_names.keys())
+    for tid in ids:
+        kind, _, ref = tid.partition(":")
+        if kind == "door":
+            local_names.setdefault(tid, f"Porta {ref}")
+        elif kind == "sensor":
+            local_names.setdefault(tid, f"Botão {ref}" if ref in _BUTTON_SENSORS else f"Sensor de porta {ref}")
     return {tid: (local_store.get_terminal_name(tid) or local_names.get(tid) or tid) for tid in ids}
 
 
@@ -577,7 +616,12 @@ def _event_to_dict(e, terminal_names: dict[str, str]) -> dict:
         "direction": e.direction,
         "directionLabel": EVENT_DIRECTION_LABEL.get(e.direction, "—"),
         "success": e.success,
-        "hasPhoto": e.has_picture or (e.name is not None),
+        "source": e.source,
+        # Evento de porta/sensor não tem pessoa: o "name" é a descrição e não há foto de cadastro.
+        "kind": "door" if e.source in DOOR_EVENT_SOURCES else "face",
+        "label": (("Acionada" if e.source == "door" else ("Fechada" if e.success else "Aberta"))
+                  if e.source in DOOR_EVENT_SOURCES else ("Liberado" if e.success else "Negado")),
+        "hasPhoto": e.has_picture or (e.name is not None and e.source not in DOOR_EVENT_SOURCES),
     }
 
 
@@ -732,6 +776,7 @@ def api_cockpit_relay_open(id):
         with _timers_lock:
             _pulse_timers[id] = t
         t.start()
+    _log_local_event("door", id, f"Aberta pelo Cockpit ({session.get('username') or 'porteiro'})")
     return jsonify({"success": True, "pulseSeconds": sec})
 
 
@@ -976,6 +1021,7 @@ def toggle(id):
         t.start()
     else:
         reles[id].toggle()
+    _log_local_event("door", id, f"Acionada pelo painel ({session.get('username') or 'admin'})")
     return redirect(url_for('index'))
 
 
@@ -1029,6 +1075,13 @@ def api_restart():
 
 if __name__ == '__main__':
     # Conecta ao ZAccess; envia relés e estado dos sensores/botões (inputs)
+    for _sid, _dev in sensores.items():
+        if hasattr(_dev, "when_activated"):
+            _sensor_state[_sid] = bool(_dev.value)  # estado inicial: não vira evento
+            _dev.when_activated = lambda i=_sid: _sensor_changed(i, True)
+            _dev.when_deactivated = lambda i=_sid: _sensor_changed(i, False)
+    zaccess_client._bridge["on_sensor"] = _sensor_changed
+    zaccess_client._bridge["on_relay"] = lambda rid, text: _log_local_event("door", rid, text)
     start_zaccess_client_in_background(reles, sensores=sensores, sensor_pins=SENSOR_PINS)
     # Eventos/fotos dos terminais do cadastro local — sempre, com ou sem ZACCESS_SERVER_URL
     start_local_event_pollers_in_background(local_store)

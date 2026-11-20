@@ -210,6 +210,7 @@ def index():
 _APP_DIR = os.path.dirname(os.path.abspath(__file__))
 _UPDATE_REPO_URL = "https://github.com/dopa-do-terere/zapy_rasp.git"
 _UPDATE_SCRIPT = os.path.join(_APP_DIR, "scripts", "atualizar-zapy.sh")
+_UPDATER = "/usr/local/sbin/zapy-update"
 
 
 def _update_log_path() -> str:
@@ -271,14 +272,17 @@ def api_update_start():
     with open(log, "w", encoding="utf-8") as f:
         f.write(f"[zapy] atualização pedida pela página por {session.get('username') or 'admin'} "
                 f"em {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}\n")
-    import getpass
-    user = getpass.getuser()
-    inner = f'bash "{_UPDATE_SCRIPT}" >> "{log}" 2>&1; echo "FIM exit=$?" >> "{log}"'
-    cmd = ["systemd-run", "--unit", f"zapy-update-{int(time.time())}", "--collect", "--quiet",
-           f"--uid={user}", f"--setenv=HOME={os.path.expanduser('~')}", f"--working-directory={_APP_DIR}",
-           "/bin/bash", "-c", inner]
-    if os.geteuid() != 0:
-        cmd = ["sudo", "-n", *cmd]
+    if os.path.isfile(_UPDATER):
+        # Comando restrito criado pelo scripts/instalar-atualizador.sh (sudo só para ele).
+        cmd = [_UPDATER] if os.geteuid() == 0 else ["sudo", "-n", _UPDATER]
+    else:
+        import getpass
+        inner = f'bash "{_UPDATE_SCRIPT}" >> "{log}" 2>&1; echo "FIM exit=$?" >> "{log}"'
+        cmd = ["systemd-run", "--unit", f"zapy-update-{int(time.time())}", "--collect", "--quiet",
+               f"--uid={getpass.getuser()}", f"--setenv=HOME={os.path.expanduser('~')}", f"--working-directory={_APP_DIR}",
+               "/bin/bash", "-c", inner]
+        if os.geteuid() != 0:
+            cmd = ["sudo", "-n", *cmd]
     try:
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
     except Exception as e:
@@ -288,7 +292,9 @@ def api_update_start():
         err = (r.stderr.strip() if r is not None else err) or "falha ao iniciar"
         with open(log, "a", encoding="utf-8") as f:
             f.write(f"[zapy] não iniciou: {err}\nFIM exit=1\n")
-        msg = "o usuário do zapy precisa de sudo sem senha" if "password" in err.lower() else err[:200]
+        msg = ("falta liberar o botão: rode uma vez no Pi "
+               f"'sudo bash {os.path.join(_APP_DIR, 'scripts', 'instalar-atualizador.sh')}'"
+               if "password" in err.lower() or "senha" in err.lower() else err[:200])
         return jsonify({"success": False, "message": msg}), 500
     return jsonify({"success": True}), 202
 

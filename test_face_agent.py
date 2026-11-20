@@ -2586,7 +2586,8 @@ class SystemUpdateRouteTest(unittest.TestCase):
 
     def test_start_runs_script_outside_service_and_blocks_second_run(self):
         ok = MagicMock(returncode=0, stderr="")
-        with patch.object(self.m.subprocess, "run", return_value=ok) as run, patch.object(self.m.os, "geteuid", return_value=1000):
+        with patch.object(self.m.subprocess, "run", return_value=ok) as run, patch.object(self.m.os, "geteuid", return_value=1000), \
+             patch.object(self.m, "_UPDATER", "/nao/existe"):
             self.assertEqual(self.client.post("/api/system/update").status_code, 202)
             cmd = run.call_args.args[0]
             self.assertEqual(cmd[:3], ["sudo", "-n", "systemd-run"])
@@ -2601,8 +2602,17 @@ class SystemUpdateRouteTest(unittest.TestCase):
         with patch.object(self.m.subprocess, "run", return_value=fail), patch.object(self.m.os, "geteuid", return_value=1000):
             res = self.client.post("/api/system/update")
         self.assertEqual(res.status_code, 500)
-        self.assertIn("sudo sem senha", res.get_json()["message"])
+        self.assertIn("instalar-atualizador.sh", res.get_json()["message"])
         self.assertFalse(self.client.get("/api/system/update").get_json()["running"])
+
+    def test_start_prefers_restricted_updater(self):
+        fd, fake = tempfile.mkstemp(dir=self.tmp)
+        os.close(fd)
+        ok = MagicMock(returncode=0, stderr="")
+        with patch.object(self.m.subprocess, "run", return_value=ok) as run, patch.object(self.m.os, "geteuid", return_value=1000), \
+             patch.object(self.m, "_UPDATER", fake):
+            self.assertEqual(self.client.post("/api/system/update").status_code, 202)
+        self.assertEqual(run.call_args.args[0], ["sudo", "-n", fake])
 
     def test_porteiro_cannot_update(self):
         with self.client.session_transaction() as sess:

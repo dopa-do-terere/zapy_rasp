@@ -161,6 +161,12 @@ systemctl daemon-reload
 systemctl enable "$SERVICE_NAME"
 systemctl start "$SERVICE_NAME"
 
+# Botao "Atualizar agora" em Configuracoes (sudo restrito a atualizar e reiniciar o zapy).
+if [[ "$RUN_AS_USER" != "root" ]]; then
+  ZAPY_USER="$RUN_AS_USER" ZAPY_SERVICE="$SERVICE_NAME" bash "$INSTALL_DIR/scripts/instalar-atualizador.sh" || \
+    echo "[zapy] AVISO: nao deu para liberar o botao Atualizar (rode scripts/instalar-atualizador.sh com sudo)."
+fi
+
 echo ""
 echo "[zapy] Instalação concluída."
 echo "  Painel:  http://$(hostname -I 2>/dev/null | awk '{print $1}'):3080"

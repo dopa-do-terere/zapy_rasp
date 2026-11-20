@@ -76,6 +76,21 @@
     .mosaic-nav span { font-size: 0.75rem; color: var(--muted-foreground); }
     .mosaic-nav button { font-size: 0.75rem; padding: 5px 12px; }
 
+    /* --- portas sem vídeo: só o botão --- */
+    .quick-doors { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+    .quick-doors:empty { display: none; }
+    .quick-door {
+        display: inline-flex; align-items: center; gap: 8px; border: 1px solid var(--border); background: var(--card);
+        border-radius: var(--radius-md); padding: 9px 14px; font: 600 0.82rem var(--font-sans); color: var(--foreground);
+        cursor: pointer; transition: border-color .12s ease, background-color .12s ease;
+    }
+    .quick-door svg { color: var(--primary); }
+    .quick-door:hover:not(:disabled) { border-color: var(--primary); }
+    .quick-door:disabled { opacity: 0.7; cursor: default; }
+    .quick-door.opened { background: var(--success); border-color: var(--success); color: #fff; }
+    .quick-door.opened svg { color: #fff; }
+    .quick-door.failed { border-color: var(--destructive); color: var(--destructive); }
+
     /* --- eventos --- */
     .event-row { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--border); }
     .event-row:last-child { border-bottom: none; }
@@ -115,6 +130,7 @@
 {% block content %}
 <div class="cockpit">
     <section>
+        <div class="quick-doors" id="quickDoors"></div>
         <div class="mosaic" id="mosaic"></div>
         <div class="mosaic-nav" id="mosaicNav" style="display:none;">
             <button type="button" class="btn btn-outline" id="mosaicPrev">‹</button>
@@ -193,6 +209,39 @@
         tiles.push({ key: 'a:' + a.id, kind: 'antenna', name: a.name || a.host, live: false, reason: 'Antena veicular',
                      url: '/api/cockpit/vehicle-antennas/' + encodeURIComponent(a.id) + '/open-gate', icon: 'iconCar' });
     });
+
+    // Sem vídeo (porta, antena ou terminal sem câmera): só o botão, fora do mosaico.
+    var buttons = tiles.filter(function(t) { return !t.live; });
+    tiles = tiles.filter(function(t) { return t.live; });
+    var quick = document.getElementById('quickDoors');
+    quick.innerHTML = buttons.map(function(t, i) {
+        return '<button type="button" class="quick-door" data-i="' + i + '" title="Abrir ' + escapeHtml(t.name) + '">' +
+            tpl('iconKey') + '<span>' + escapeHtml(t.name) + '</span></button>';
+    }).join('');
+    quick.addEventListener('click', function(e) {
+        var btn = e.target.closest('.quick-door');
+        if (!btn || btn.disabled) return;
+        var t = buttons[parseInt(btn.dataset.i, 10)], label = btn.querySelector('span');
+        btn.disabled = true;
+        btn.classList.remove('failed');
+        fetch(t.url, { method: 'POST' })
+            .then(function(r) { return r.json().then(function(j) { return { ok: r.ok, json: j }; }); })
+            .then(function(o) {
+                if (o.ok && o.json.success) {
+                    btn.classList.add('opened');
+                    label.textContent = t.name + ': aberta';
+                    setTimeout(loadEvents, 1500);
+                } else {
+                    btn.classList.add('failed');
+                    label.textContent = t.name + ': ' + (o.json.message || o.json.reason || 'falha');
+                }
+            })
+            .catch(function() { btn.classList.add('failed'); label.textContent = t.name + ': erro de conexão'; })
+            .then(function() {
+                setTimeout(function() { btn.classList.remove('opened', 'failed'); label.textContent = t.name; btn.disabled = false; }, 2500);
+            });
+    });
+    if (!tiles.length) document.getElementById('layoutSwitch').style.display = 'none';
 
     var mosaic = document.getElementById('mosaic');
     var state = { n: parseInt(store('zapy.cockpit.n'), 10) || (tiles.length > 1 ? 2 : 1), page: 0, selected: store('zapy.cockpit.sel') };

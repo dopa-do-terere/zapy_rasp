@@ -2585,17 +2585,19 @@ class ParcelsTest(unittest.TestCase):
                 {"id": "b" * 24, "unit": "102", "status": "waiting", "createdAt": "2026-11-20T10:00:00Z"},
                 {"id": "a" * 24, "unit": "101", "status": "waiting", "createdAt": "2026-11-19T10:00:00Z"},
                 {"id": "c" * 24, "unit": "103", "status": "delivered"},
+                {"id": "e" * 24, "unit": "105", "status": "expected", "createdAt": "2026-11-18T10:00:00Z"},
                 {"bad": 1},
             ],
             "units": ["101", "102", 3],
             "carriers": [{"value": "correios", "label": "Correios"}, "x"],
         })
         snap = parcels_store.snapshot()
-        self.assertEqual([p["id"][0] for p in snap["parcels"]], ["a", "b"])
+        self.assertEqual([p["id"][0] for p in snap["parcels"]], ["a", "b", "e"])
         self.assertEqual(snap["units"], ["101", "102"])
         self.assertEqual(len(snap["carriers"]), 1)
         parcels_store.upsert({"id": "d" * 24, "unit": "104", "status": "waiting", "createdAt": "2026-11-20T11:00:00Z"})
         parcels_store.upsert({"id": "a" * 24, "unit": "101", "status": "delivered"})
+        parcels_store.upsert({"id": "e" * 24, "unit": "105", "status": "cancelled"})
         self.assertEqual([p["id"][0] for p in parcels_store.snapshot()["parcels"]], ["b", "d"])
 
     def test_cockpit_parcel_routes(self):
@@ -2623,6 +2625,8 @@ class ParcelsTest(unittest.TestCase):
             self.assertEqual(client.post(url, json={"code": "123456", "pickedUpBy": "Ana"}).status_code, 200)
             self.assertEqual(call.call_args[0][0], "parcel:deliver")
             self.assertEqual(call.call_args[0][1]["code"], "123456")
+            self.assertEqual(client.post("/api/cockpit/parcels/" + "f" * 24 + "/arrive").status_code, 200)
+            self.assertEqual(call.call_args[0], ("parcel:arrive", {"parcelId": "f" * 24, "by": "joao"}))
 
             call.return_value = {"success": False, "message": "Codigo incorreto."}
             r = client.post(url, json={"code": "000000", "pickedUpBy": "Ana"})

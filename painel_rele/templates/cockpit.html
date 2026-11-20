@@ -431,7 +431,7 @@
     var parcelCarrierName = document.getElementById('parcelCarrierName');
     var parcelFormMsg = document.getElementById('parcelFormMsg');
     var carriersLoaded = false;
-    function parcelDays(p) { return Math.floor((Date.now() - new Date(p.createdAt).getTime()) / 864e5); }
+    function parcelDays(p) { return p.receivedAt ? Math.floor((Date.now() - new Date(p.receivedAt).getTime()) / 864e5) : 0; }
     function renderParcels(j) {
         var list = j.parcels || [];
         if (!carriersLoaded && (j.carriers || []).length) {
@@ -444,20 +444,25 @@
             return '<option value="' + escapeHtml(u) + '"></option>';
         }).join('');
         document.getElementById('parcelsEmpty').style.display = list.length ? 'none' : '';
-        document.getElementById('parcelsCount').textContent = list.length ? list.length + ' aguardando' : '';
+        var expected = list.filter(function(p) { return p.status === 'expected'; }).length;
+        var waiting = list.length - expected;
+        document.getElementById('parcelsCount').textContent = [waiting ? waiting + ' na portaria' : '', expected ? expected + ' esperada(s)' : ''].filter(Boolean).join(' · ');
         parcelsList.innerHTML = list.map(function(p) {
             var days = parcelDays(p);
+            var isExpected = p.status === 'expected';
             var meta = 'Unidade ' + escapeHtml(p.unit) + (p.recipientName ? ' · para ' + escapeHtml(p.recipientName) : '') +
-                ' · ' + (days ? 'há ' + days + ' dia(s)' : 'hoje');
+                (isExpected ? ' · esperada' + (p.expectedBy ? ' (aviso de ' + escapeHtml(p.expectedBy) + ')' : '') : ' · ' + (days ? 'há ' + days + ' dia(s)' : 'hoje'));
             var auth = p.authorizedName ? '<div class="notice-meta">Autorizado a retirar: <b>' + escapeHtml(p.authorizedName) + '</b>' +
                 (p.authorizedDoc ? ' (' + escapeHtml(p.authorizedDoc) + ')' : '') + '</div>' : '';
-            var deliver = p.codeLocked
+            var deliver = isExpected
+                ? '<div class="parcel-deliver"><button type="button" class="btn-ack" data-arrive="' + escapeHtml(p.id) + '">Chegou</button><div class="notice-err"></div></div>'
+                : p.codeLocked
                 ? '<div class="notice-err">Código bloqueado após 5 tentativas: entregue pelo painel.</div>'
                 : '<form class="parcel-deliver" data-deliver="' + escapeHtml(p.id) + '">' +
                   '<input name="code" inputmode="numeric" maxlength="6" placeholder="Código" required>' +
                   '<input name="pickedUpBy" maxlength="120" placeholder="Quem retirou" value="' + escapeHtml(p.authorizedName || '') + '" required>' +
                   '<button type="submit" class="btn-ack">Entregar</button><div class="notice-err"></div></form>';
-            return '<div class="notice-item' + (days >= 3 ? ' old' : ' pending') + '" style="justify-content:flex-start">' +
+            return '<div class="notice-item' + (isExpected ? '' : days >= 3 ? ' old' : ' pending') + '" style="justify-content:flex-start">' +
                 '<span class="parcel-badge" style="background:' + escapeHtml(p.carrierColor || '#6B7280') + ';color:' + escapeHtml(p.carrierFg || '#fff') + '">' + escapeHtml(p.carrierShort || '?') + '</span>' +
                 '<div class="notice-main" style="flex:1">' +
                 '<div class="notice-title">' + escapeHtml(p.carrierLabel || p.carrier) + '</div>' +
@@ -487,6 +492,16 @@
             if (j.success) { parcelForm.reset(); parcelCarrierName.style.display = 'none'; loadParcels(); }
             else { parcelFormMsg.textContent = j.message || 'Falha.'; }
         }).catch(function() { btn.disabled = false; parcelFormMsg.textContent = 'Falha.'; });
+    });
+    parcelsList.addEventListener('click', function(e) {
+        var btn = e.target.closest('[data-arrive]');
+        if (!btn || btn.disabled) return;
+        var msg = btn.parentNode.querySelector('.notice-err');
+        btn.disabled = true; msg.textContent = '';
+        postJson('/api/cockpit/parcels/' + encodeURIComponent(btn.getAttribute('data-arrive')) + '/arrive', {}).then(function(j) {
+            if (j.success) { loadParcels(); }
+            else { msg.textContent = j.message || 'Falha.'; btn.disabled = false; }
+        }).catch(function() { msg.textContent = 'Falha.'; btn.disabled = false; });
     });
     parcelsList.addEventListener('submit', function(e) {
         var form = e.target.closest('[data-deliver]');

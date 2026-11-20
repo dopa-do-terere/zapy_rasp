@@ -790,6 +790,15 @@ def api_cockpit_parcel_create():
     })
 
 
+@app.route('/api/cockpit/parcels/<parcel_id>/arrive', methods=['POST'])
+@login_required
+def api_cockpit_parcel_arrive(parcel_id):
+    """Encomenda que o morador avisou chegou: o ZAccess avisa a unidade."""
+    if not re.fullmatch(r"[0-9a-f]{24}", parcel_id or ""):
+        return jsonify({"success": False, "message": "encomenda inválida"}), 400
+    return _parcel_reply("parcel:arrive", {"parcelId": parcel_id, "by": session.get("username") or "Portaria"})
+
+
 @app.route('/api/cockpit/parcels/<parcel_id>/deliver', methods=['POST'])
 @login_required
 def api_cockpit_parcel_deliver(parcel_id):

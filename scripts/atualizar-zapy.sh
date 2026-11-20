@@ -33,28 +33,12 @@ fi
 [ -n "${ZAPY_DIR:-}" ] && is_zapy "$ZAPY_DIR" || { echo "[zapy] pasta do zapy nao encontrada; rode dentro dela ou use ZAPY_DIR=..."; exit 1; }
 ZAPY_DIR="$(cd "$ZAPY_DIR" && pwd)"
 
-if [ -z "${ZAPY_SERVICE:-}" ]; then
-  unit="$(grep -lx "WorkingDirectory=$ZAPY_DIR" /etc/systemd/system/*.service 2>/dev/null | head -1 || true)"
-  if [ -z "$unit" ]; then
-    # Servico de usuario (ex.: bancada: systemctl --user zapy-bench)
-    unit="$(grep -lxE "WorkingDirectory=($ZAPY_DIR|%h/${ZAPY_DIR#$HOME/})" "$HOME"/.config/systemd/user/*.service 2>/dev/null | head -1 || true)"
-    [ -z "$unit" ] && [ -f "$HOME/.config/systemd/user/$(basename "$ZAPY_DIR").service" ] && unit="$HOME/.config/systemd/user/$(basename "$ZAPY_DIR").service"
-    if [ -n "$unit" ] && [ -z "${ZAPY_SYSTEMCTL:-}" ]; then SC="systemctl --user"; fi
-  fi
-  ZAPY_SERVICE="$(basename "${unit:-zapy.service}" .service)"
-fi
-# Confere o servico ANTES de mexer no codigo.
-if ! ${SC#sudo } list-unit-files "$ZAPY_SERVICE.service" --no-legend 2>/dev/null | grep -q .; then
-  echo "[zapy] servico $ZAPY_SERVICE nao encontrado ($SC); nada foi alterado. Use ZAPY_SERVICE=nome"
-  exit 1
-fi
-
 if [ -f "$SRC" ]; then
   SRC="$(realpath "$SRC")"
   git bundle verify -q "$SRC" >/dev/null
 fi
 cd "$ZAPY_DIR"
-echo "[zapy] pasta: $ZAPY_DIR  servico: $ZAPY_SERVICE  origem: $SRC ($REF)"
+echo "[zapy] pasta: $ZAPY_DIR  origem: $SRC ($REF)"
 
 OLD=""
 if [ -d .git ]; then
@@ -85,6 +69,60 @@ else
     exit 1
   fi
 fi
+
+
+# Usa sempre o atualizador da versao nova (correcoes do proprio script valem ja nesta atualizacao).
+if [ -z "${ZAPY_REEXEC:-}" ]; then
+  _new_script="$(mktemp)"
+  if git -C "${TMPGIT:-$ZAPY_DIR}" show "$NEW:scripts/atualizar-zapy.sh" > "$_new_script" 2>/dev/null \
+     && ! cmp -s "$_new_script" "$ZAPY_DIR/scripts/atualizar-zapy.sh"; then
+    echo "[zapy] usando o atualizador da versao ${NEW:0:7}"
+    ZAPY_REEXEC=1 ZAPY_DIR="$ZAPY_DIR" exec bash "$_new_script" "$SRC" "$REF"
+  fi
+  rm -f "$_new_script"
+fi
+# ---- Servico systemd do zapy: primeiro pelo processo rodando (cgroup), depois pelos units ----
+unit_from_process() {
+  local pid cg u
+  for pid in $(pgrep -f "app.py" 2>/dev/null); do
+    [ "$(readlink "/proc/$pid/cwd" 2>/dev/null)" = "$ZAPY_DIR" ] || continue
+    cg="$(tail -1 "/proc/$pid/cgroup" 2>/dev/null | cut -d: -f3)"
+    u="$(printf '%s' "$cg" | tr '/' '\n' | grep '\.service$' | grep -v '^user@' | tail -1 || true)"
+    [ -n "$u" ] || continue
+    ZAPY_SERVICE="${u%.service}"
+    case "$cg" in */user@*) [ -z "${ZAPY_SYSTEMCTL:-}" ] && SC="systemctl --user";; esac
+    return 0
+  done
+  return 1
+}
+unit_exists() { ${SC#sudo } list-unit-files "$1.service" --no-legend 2>/dev/null | grep -q .; }
+user_bus() {
+  case "$SC" in *--user*)
+    export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+    export DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-unix:path=$XDG_RUNTIME_DIR/bus}";;
+  esac
+}
+if [ -n "${ZAPY_SERVICE:-}" ]; then user_bus; fi
+if [ -z "${ZAPY_SERVICE:-}" ] || ! unit_exists "$ZAPY_SERVICE"; then
+  ZAPY_SERVICE=""
+  if ! unit_from_process; then
+    unit="$(grep -lx "WorkingDirectory=$ZAPY_DIR" /etc/systemd/system/*.service 2>/dev/null | head -1 || true)"
+    if [ -z "$unit" ]; then
+      unit="$(grep -lxE "WorkingDirectory=($ZAPY_DIR|%h/${ZAPY_DIR#$HOME/})" "$HOME"/.config/systemd/user/*.service 2>/dev/null | head -1 || true)"
+      [ -z "$unit" ] && [ -f "$HOME/.config/systemd/user/$(basename "$ZAPY_DIR").service" ] && unit="$HOME/.config/systemd/user/$(basename "$ZAPY_DIR").service"
+      if [ -n "$unit" ] && [ -z "${ZAPY_SYSTEMCTL:-}" ]; then SC="systemctl --user"; fi
+    fi
+    ZAPY_SERVICE="$(basename "${unit:-zapy.service}" .service)"
+  fi
+fi
+user_bus
+# Confere o servico ANTES de mexer no codigo.
+if ! unit_exists "$ZAPY_SERVICE"; then
+  echo "[zapy] servico $ZAPY_SERVICE nao encontrado ($SC); nada foi alterado."
+  echo "[zapy] servicos com zapy no nome: $(systemctl list-units --all --no-legend '*zapy*' 2>/dev/null | awk '{print $1}' | tr '\n' ' ')$(systemctl --user list-units --all --no-legend '*zapy*' 2>/dev/null | awk '{print $1" (--user)"}' | tr '\n' ' ')"
+  exit 1
+fi
+echo "[zapy] servico: $ZAPY_SERVICE ($SC)"
 
 TS="$(date +%Y%m%d-%H%M%S)"
 mkdir -p ~/zapy-backups

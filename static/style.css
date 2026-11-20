@@ -78,6 +78,23 @@ body {
 .sidebar-footer .nav-item.logout:hover { background: #fef2f2; color: var(--destructive); }
 
 .main-area { flex: 1; min-width: 0; }
+
+/* Menu reduzido: só ícones; o nome aparece ao passar o mouse (desktop). */
+@media (min-width: 861px) {
+    .sidebar { width: 64px; z-index: 40; }
+    .sidebar-brand { justify-content: center; padding: 16px 0; }
+    .sidebar-brand-text { display: none; }
+    .sidebar-nav, .sidebar-footer { padding: 10px 8px; overflow: visible; }
+    .nav-item { position: relative; justify-content: center; padding: 10px 0; border-left-width: 0; }
+    .nav-item.active { box-shadow: inset 2px 0 0 var(--primary); }
+    .nav-label {
+        position: absolute; left: calc(100% + 10px); top: 50%; transform: translateY(-50%);
+        background: var(--foreground); color: var(--card); font-size: 0.75rem; font-weight: 600;
+        padding: 5px 9px; border-radius: var(--radius-md); white-space: nowrap;
+        opacity: 0; pointer-events: none; transition: opacity .12s ease; z-index: 50;
+    }
+    .nav-item:hover .nav-label, .nav-item:focus-visible .nav-label { opacity: 1; }
+}
 .page-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 26px 32px 0; flex-wrap: wrap; }
 .page-header h1 { font-family: var(--font-display); font-size: 1.35rem; font-weight: 700; color: var(--foreground); margin: 0; letter-spacing: -0.01em; }
 .page-header p { font-size: 0.85rem; color: var(--muted-foreground); margin: 4px 0 0; max-width: 620px; }

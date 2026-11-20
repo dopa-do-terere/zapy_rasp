@@ -2394,31 +2394,27 @@ class CockpitLayoutTest(unittest.TestCase):
             sess["role"] = role
         return client.get("/cockpit").get_data(as_text=True)
 
-    def test_single_terminal_has_stage_without_list(self):
+    def test_mosaic_has_layouts_and_terminal_data_without_password(self):
         face_terminals_store.create_terminal({"vendor": "hikvision", "host": "192.0.2.5", "name": "Portaria", "password": "pw"})
+        face_terminals_store.create_terminal({"vendor": "intelbras", "host": "192.0.2.6", "name": "Garagem"})
         html = self._html()
-        self.assertIn('class="panel live-area single"', html)
-        self.assertIn('id="stageVideo"', html)
-        self.assertNotIn('id="liveList"', html)
+        self.assertIn('id="mosaic"', html)
+        for n in ("1", "2", "3", "4"):
+            self.assertIn('data-n="' + n + '"', html)
+        self.assertIn('"name": "Portaria"', html)
+        self.assertIn('"name": "Garagem"', html)
         self.assertNotIn('"pw"', html)
         self.assertIn("live-player.js", html)
+        self.assertIn('id="noticesList"', html)
+        self.assertIn('id="eventsList"', html)
 
-    def test_two_terminals_stage_and_list(self):
-        face_terminals_store.create_terminal({"vendor": "hikvision", "host": "192.0.2.5", "name": "A"})
-        face_terminals_store.create_terminal({"vendor": "intelbras", "host": "192.0.2.6", "name": "B"})
-        html = self._html()
-        self.assertIn('class="panel live-area multi"', html)
-        self.assertIn('id="liveList"', html)
-        self.assertEqual(html.count('<li class="live-item'), 2)
-
-    def test_terminal_without_rtsp_renders_fallback(self):
+    def test_terminal_without_rtsp_sends_reason_to_mosaic(self):
         face_terminals_store.create_terminal({"vendor": "controlid", "host": "192.0.2.7", "name": "Catraca"})
         import app as app_module
         with patch.object(app_module, "build_rtsp_url", return_value=None):
             html = self._html()
-        self.assertIn('id="stageFallback" class="live-fallback"', html)
-        self.assertIn("Vídeo indisponível", html)
-        self.assertIn("fabricante sem vídeo ao vivo", html)
+        self.assertIn('"live": false', html)
+        self.assertIn("fabricante sem v\\u00eddeo ao vivo", html)  # tojson escapa o acento
 
     def test_live_flag_follows_global_and_terminal_switches(self):
         t = face_terminals_store.create_terminal({"vendor": "hikvision", "host": "192.0.2.5"})

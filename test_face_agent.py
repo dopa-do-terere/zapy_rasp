@@ -2614,6 +2614,26 @@ class SystemUpdateRouteTest(unittest.TestCase):
             self.assertEqual(self.client.post("/api/system/update").status_code, 202)
         self.assertEqual(run.call_args.args[0], ["sudo", "-n", fake])
 
+    def test_user_service_runs_without_sudo(self):
+        ok = MagicMock(returncode=0, stderr="")
+        with patch.object(self.m.subprocess, "run", return_value=ok) as run, patch.object(self.m, "_UPDATER", "/nao/existe"), \
+             patch.object(self.m, "_own_unit", return_value=("zapy-bench", True)):
+            self.assertEqual(self.client.post("/api/system/update").status_code, 202)
+        cmd = run.call_args.args[0]
+        self.assertEqual(cmd[:2], ["systemd-run", "--user"])
+        self.assertIn("--setenv=ZAPY_SERVICE=zapy-bench", cmd)
+        self.assertIn("--setenv=ZAPY_SYSTEMCTL=systemctl --user", cmd)
+
+    def test_own_unit_from_cgroup(self):
+        from unittest.mock import mock_open
+        for text, expected in (
+            ("0::/user.slice/user-1000.slice/user@1000.service/app.slice/zapy-bench.service\n", ("zapy-bench", True)),
+            ("0::/system.slice/zapy.service\n", ("zapy", False)),
+            ("0::/user.slice/user-1000.slice/session-3.scope\n", (None, False)),
+        ):
+            with patch("builtins.open", mock_open(read_data=text)):
+                self.assertEqual(self.m._own_unit(), expected)
+
     def test_porteiro_cannot_update(self):
         with self.client.session_transaction() as sess:
             sess["role"] = "porteiro"

@@ -217,6 +217,17 @@ def _update_log_path() -> str:
     return os.path.join(os.path.expanduser("~"), "zapy-backups", "update-last.log")
 
 
+def _own_unit() -> tuple[str | None, bool]:
+    """(serviço systemd que roda este zapy, é serviço de usuário?) lido do cgroup."""
+    try:
+        with open("/proc/self/cgroup", encoding="utf-8") as f:
+            path = f.read().strip().split(":")[-1]
+    except OSError:
+        return None, False
+    units = [p for p in path.split("/") if p.endswith(".service") and not p.startswith("user@")]
+    return (units[-1][:-len(".service")] if units else None), "/user@" in path
+
+
 def _git(*args) -> str:
     try:
         r = subprocess.run(["git", "-C", _APP_DIR, *args], capture_output=True, text=True, timeout=30)
@@ -277,12 +288,20 @@ def api_update_start():
         cmd = [_UPDATER] if os.geteuid() == 0 else ["sudo", "-n", _UPDATER]
     else:
         import getpass
+        unit, user_unit = _own_unit()
         inner = f'bash "{_UPDATE_SCRIPT}" >> "{log}" 2>&1; echo "FIM exit=$?" >> "{log}"'
-        cmd = ["systemd-run", "--unit", f"zapy-update-{int(time.time())}", "--collect", "--quiet",
-               f"--uid={getpass.getuser()}", f"--setenv=HOME={os.path.expanduser('~')}", f"--working-directory={_APP_DIR}",
-               "/bin/bash", "-c", inner]
-        if os.geteuid() != 0:
-            cmd = ["sudo", "-n", *cmd]
+        env = [f"--setenv=ZAPY_DIR={_APP_DIR}"] + ([f"--setenv=ZAPY_SERVICE={unit}"] if unit else [])
+        if user_unit:
+            # Serviço de usuário (bancada): roda e reinicia sem sudo.
+            cmd = ["systemd-run", "--user", "--unit", f"zapy-update-{int(time.time())}", "--collect", "--quiet",
+                   *env, "--setenv=ZAPY_SYSTEMCTL=systemctl --user", f"--working-directory={_APP_DIR}",
+                   "/bin/bash", "-c", inner]
+        else:
+            cmd = ["systemd-run", "--unit", f"zapy-update-{int(time.time())}", "--collect", "--quiet",
+                   f"--uid={getpass.getuser()}", f"--setenv=HOME={os.path.expanduser('~')}", *env,
+                   f"--working-directory={_APP_DIR}", "/bin/bash", "-c", inner]
+            if os.geteuid() != 0:
+                cmd = ["sudo", "-n", *cmd]
     try:
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
     except Exception as e:

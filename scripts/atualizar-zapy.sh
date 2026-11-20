@@ -35,7 +35,18 @@ ZAPY_DIR="$(cd "$ZAPY_DIR" && pwd)"
 
 if [ -z "${ZAPY_SERVICE:-}" ]; then
   unit="$(grep -lx "WorkingDirectory=$ZAPY_DIR" /etc/systemd/system/*.service 2>/dev/null | head -1 || true)"
+  if [ -z "$unit" ]; then
+    # Servico de usuario (ex.: bancada: systemctl --user zapy-bench)
+    unit="$(grep -lxE "WorkingDirectory=($ZAPY_DIR|%h/${ZAPY_DIR#$HOME/})" "$HOME"/.config/systemd/user/*.service 2>/dev/null | head -1 || true)"
+    [ -z "$unit" ] && [ -f "$HOME/.config/systemd/user/$(basename "$ZAPY_DIR").service" ] && unit="$HOME/.config/systemd/user/$(basename "$ZAPY_DIR").service"
+    if [ -n "$unit" ] && [ -z "${ZAPY_SYSTEMCTL:-}" ]; then SC="systemctl --user"; fi
+  fi
   ZAPY_SERVICE="$(basename "${unit:-zapy.service}" .service)"
+fi
+# Confere o servico ANTES de mexer no codigo.
+if ! ${SC#sudo } list-unit-files "$ZAPY_SERVICE.service" --no-legend 2>/dev/null | grep -q .; then
+  echo "[zapy] servico $ZAPY_SERVICE nao encontrado ($SC); nada foi alterado. Use ZAPY_SERVICE=nome"
+  exit 1
 fi
 
 if [ -f "$SRC" ]; then
@@ -103,9 +114,10 @@ else
 fi
 
 echo "[zapy] $OLDS -> ${NEW:0:7}; reiniciando $ZAPY_SERVICE"
-$SC restart "$ZAPY_SERVICE"
+restarted=1
+$SC restart "$ZAPY_SERVICE" || restarted=0
 sleep 10
-if ! $SC is-active --quiet "$ZAPY_SERVICE"; then
+if [ "$restarted" = 0 ] || ! $SC is-active --quiet "$ZAPY_SERVICE"; then
   echo "[zapy] servico nao subiu; voltando ao estado anterior"
   if [ -z "$OLD" ]; then
     rm -rf .git

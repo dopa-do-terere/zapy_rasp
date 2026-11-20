@@ -206,6 +206,93 @@ def index():
     )
 
 
+# ---- Atualizar o zapy pela página (roda scripts/atualizar-zapy.sh) ----
+_APP_DIR = os.path.dirname(os.path.abspath(__file__))
+_UPDATE_REPO_URL = "https://github.com/dopa-do-terere/zapy_rasp.git"
+_UPDATE_SCRIPT = os.path.join(_APP_DIR, "scripts", "atualizar-zapy.sh")
+
+
+def _update_log_path() -> str:
+    return os.path.join(os.path.expanduser("~"), "zapy-backups", "update-last.log")
+
+
+def _git(*args) -> str:
+    try:
+        r = subprocess.run(["git", "-C", _APP_DIR, *args], capture_output=True, text=True, timeout=30)
+        return r.stdout.strip() if r.returncode == 0 else ""
+    except Exception:
+        return ""
+
+
+def _update_log_tail(lines: int = 80) -> tuple[str, bool]:
+    """(últimas linhas do log, ainda rodando?) — o script sempre termina com "FIM exit=N"."""
+    try:
+        with open(_update_log_path(), encoding="utf-8", errors="replace") as f:
+            text = f.read()[-20000:]
+    except OSError:
+        return "", False
+    tail = "\n".join(text.splitlines()[-lines:])
+    return tail, "FIM exit=" not in text
+
+
+@app.route('/api/system/update', methods=['GET'])
+@admin_required
+def api_update_status():
+    log, running = _update_log_tail()
+    return jsonify({"current": _git("log", "-1", "--format=%h %s (%cd)", "--date=format:%d/%m/%Y %H:%M"),
+                    "running": running, "log": log})
+
+
+@app.route('/api/system/update/check', methods=['POST'])
+@admin_required
+def api_update_check():
+    """Compara o commit instalado com a main do GitHub (só leitura)."""
+    head = _git("rev-parse", "HEAD")
+    remote = _git("ls-remote", _UPDATE_REPO_URL, "refs/heads/main").split("\t")[0]
+    if not remote:
+        return jsonify({"success": False, "message": "não consegui falar com o GitHub"}), 502
+    return jsonify({"success": True, "current": head[:7], "latest": remote[:7], "available": bool(head) and head != remote})
+
+
+@app.route('/api/system/update', methods=['POST'])
+@admin_required
+def api_update_start():
+    """Roda o atualizar-zapy.sh fora do serviço (systemd-run): o script reinicia o zapy,
+    e um processo filho do serviço morreria junto no restart. Precisa de sudo sem senha
+    (o mesmo que o script já usa para reiniciar o serviço)."""
+    if os.name == "nt":
+        return jsonify({"success": False, "message": "atualização pela página só no Linux (Raspberry)"}), 400
+    if not os.path.isfile(_UPDATE_SCRIPT):
+        return jsonify({"success": False, "message": "scripts/atualizar-zapy.sh não encontrado"}), 500
+    if _update_log_tail()[1]:
+        return jsonify({"success": False, "message": "já existe uma atualização em andamento"}), 409
+    log = _update_log_path()
+    os.makedirs(os.path.dirname(log), exist_ok=True)
+    with open(log, "w", encoding="utf-8") as f:
+        f.write(f"[zapy] atualização pedida pela página por {session.get('username') or 'admin'} "
+                f"em {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}\n")
+    import getpass
+    user = getpass.getuser()
+    inner = f'bash "{_UPDATE_SCRIPT}" >> "{log}" 2>&1; echo "FIM exit=$?" >> "{log}"'
+    cmd = ["systemd-run", "--unit", f"zapy-update-{int(time.time())}", "--collect", "--quiet",
+           f"--uid={user}", f"--setenv=HOME={os.path.expanduser('~')}", f"--working-directory={_APP_DIR}",
+           "/bin/bash", "-c", inner]
+    if os.geteuid() != 0:
+        cmd = ["sudo", "-n", *cmd]
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+    except Exception as e:
+        r = None
+        err = str(e)
+    if r is None or r.returncode != 0:
+        err = (r.stderr.strip() if r is not None else err) or "falha ao iniciar"
+        with open(log, "a", encoding="utf-8") as f:
+            f.write(f"[zapy] não iniciou: {err}\nFIM exit=1\n")
+        msg = "o usuário do zapy precisa de sudo sem senha" if "password" in err.lower() else err[:200]
+        return jsonify({"success": False, "message": msg}), 500
+    return jsonify({"success": True}), 202
+
+
 @app.route('/config')
 @admin_required
 def config_page():

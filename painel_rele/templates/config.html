@@ -107,11 +107,66 @@
         </div>
         <div class="msg" id="liveMsg"></div>
     </section>
+
+    <section class="panel">
+        <div class="panel-header">
+            <span class="panel-title">Atualização do zapy</span>
+            <span class="panel-sub" id="updCurrent"></span>
+        </div>
+        <p class="panel-desc">
+            Baixa a versão mais nova, faz backup em ~/zapy-backups e reinicia o zapy (portas e terminais
+            ficam cerca de 15 s sem o painel). Se o zapy não voltar, ele volta sozinho para a versão anterior.
+        </p>
+        <div class="btn-row">
+            <button type="button" class="btn btn-outline" id="updCheck">Verificar atualização</button>
+            <button type="button" class="btn btn-primary" id="updRun">Atualizar agora</button>
+        </div>
+        <div class="msg" id="updMsg"></div>
+        <pre id="updLog" style="display:none; max-height:320px; overflow:auto; font-size:0.75rem; white-space:pre-wrap; background:var(--muted, #f4f4f5); padding:10px; border-radius:8px;"></pre>
+    </section>
 </div>
 {% endblock %}
 
 {% block extra_body %}
 <script>
+(function() {
+    var cur = document.getElementById('updCurrent'), msg = document.getElementById('updMsg');
+    var logEl = document.getElementById('updLog'), runBtn = document.getElementById('updRun');
+    var timer = null;
+    function say(text, isError) { msg.textContent = text; msg.className = 'msg ' + (isError ? 'error' : 'success'); msg.style.display = 'block'; }
+    function poll() {
+        fetch('/api/system/update').then(function(r) { return r.json(); }).then(function(j) {
+            cur.textContent = j.current || '';
+            if (j.log) { logEl.textContent = j.log; logEl.style.display = 'block'; logEl.scrollTop = logEl.scrollHeight; }
+            runBtn.disabled = !!j.running;
+            if (j.running) {
+                say('Atualizando... a página pode ficar alguns segundos sem responder.', false);
+                if (!timer) timer = setInterval(poll, 3000);
+            } else if (timer) {
+                clearInterval(timer); timer = null;
+                var ok = /FIM exit=0/.test(j.log || '');
+                say(ok ? 'Atualização concluída.' : 'A atualização falhou; veja o log abaixo.', !ok);
+            }
+        }).catch(function() { if (!timer) timer = setInterval(poll, 3000); });  // zapy reiniciando
+    }
+    document.getElementById('updCheck').addEventListener('click', function() {
+        say('Verificando...', false);
+        fetch('/api/system/update/check', { method: 'POST' }).then(function(r) { return r.json(); }).then(function(j) {
+            if (!j.success) return say(j.message || 'Falha ao verificar.', true);
+            say(j.available ? 'Há versão nova (' + j.current + ' -> ' + j.latest + ').' : 'Já está na versão mais nova (' + j.current + ').', false);
+        }).catch(function() { say('Falha ao verificar.', true); });
+    });
+    runBtn.addEventListener('click', function() {
+        if (!confirm('Atualizar o zapy agora? Ele reinicia e fica cerca de 15 s fora.')) return;
+        runBtn.disabled = true;
+        fetch('/api/system/update', { method: 'POST' }).then(function(r) { return r.json(); }).then(function(j) {
+            if (!j.success) { runBtn.disabled = false; return say(j.message || 'Falha ao iniciar.', true); }
+            poll(); if (!timer) timer = setInterval(poll, 3000);
+        }).catch(function() { runBtn.disabled = false; say('Falha ao iniciar.', true); });
+    });
+    poll();
+})();
+
 (function() {
     var configKeys = [
         'ZACCESS_SERVER_URL', 'ZACCESS_DEVICE_SERIAL', 'ZACCESS_DEVICE_TOKEN', 'PORT',

@@ -2565,3 +2565,50 @@ class PortariaNoticesTest(unittest.TestCase):
             self.assertEqual(client.post("/api/cockpit/notices/xyz/ack").status_code, 400)
             ack.return_value = False
             self.assertEqual(client.post("/api/cockpit/notices/" + "f" * 24 + "/ack").status_code, 503)
+
+
+class SystemUpdateRouteTest(unittest.TestCase):
+    def setUp(self):
+        os.environ.setdefault("GPIOZERO_PIN_FACTORY", "mock")
+        with patch("face_agent.LocalStore", MagicMock()):
+            import app as app_module
+        self.m = app_module
+        self.tmp = tempfile.mkdtemp()
+        self.log = os.path.join(self.tmp, "update-last.log")
+        self.p = patch.object(app_module, "_update_log_path", return_value=self.log)
+        self.p.start()
+        self.client = app_module.app.test_client()
+        with self.client.session_transaction() as sess:
+            sess["logged_in"] = True
+            sess["role"] = "admin"
+            sess["username"] = "admin"
+
+    def tearDown(self):
+        self.p.stop()
+        import shutil
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_start_runs_script_outside_service_and_blocks_second_run(self):
+        ok = MagicMock(returncode=0, stderr="")
+        with patch.object(self.m.subprocess, "run", return_value=ok) as run, patch.object(self.m.os, "geteuid", return_value=1000):
+            self.assertEqual(self.client.post("/api/system/update").status_code, 202)
+            cmd = run.call_args.args[0]
+            self.assertEqual(cmd[:3], ["sudo", "-n", "systemd-run"])
+            self.assertIn("atualizar-zapy.sh", cmd[-1])
+            self.assertIn("FIM exit=", cmd[-1])
+        with patch.object(self.m, "_git", return_value="abc1234 x"):
+            self.assertTrue(self.client.get("/api/system/update").get_json()["running"])
+        self.assertEqual(self.client.post("/api/system/update").status_code, 409)
+
+    def test_start_without_sudo_reports_and_finishes_log(self):
+        fail = MagicMock(returncode=1, stderr="sudo: a password is required")
+        with patch.object(self.m.subprocess, "run", return_value=fail), patch.object(self.m.os, "geteuid", return_value=1000):
+            res = self.client.post("/api/system/update")
+        self.assertEqual(res.status_code, 500)
+        self.assertIn("sudo sem senha", res.get_json()["message"])
+        self.assertFalse(self.client.get("/api/system/update").get_json()["running"])
+
+    def test_porteiro_cannot_update(self):
+        with self.client.session_transaction() as sess:
+            sess["role"] = "porteiro"
+        self.assertEqual(self.client.post("/api/system/update").status_code, 302)

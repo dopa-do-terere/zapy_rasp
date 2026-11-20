@@ -995,6 +995,65 @@ def health_page():
     return render_template('health.html')
 
 
+def _read(path: str) -> str:
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            return f.read()
+    except OSError:
+        return ""
+
+
+@app.route('/api/health-local')
+@admin_required
+def api_health_local():
+    """Saúde deste zapy (só stdlib; /proc e /sys no Linux, o resto vira null)."""
+    import platform
+    import shutil
+    import socket as _socket
+    mem = {}
+    for line in _read("/proc/meminfo").splitlines():
+        k, _, v = line.partition(":")
+        if v.strip().split() and v.strip().split()[0].isdigit():
+            mem[k] = int(v.split()[0]) * 1024
+    try:
+        load = os.getloadavg()
+    except OSError:
+        load = None
+    disk = shutil.disk_usage(_APP_DIR)
+    uptime = _read("/proc/uptime").split()
+    temp = _read("/sys/class/thermal/thermal_zone0/temp").strip()
+    os_name = next((l.split("=", 1)[1].strip('"') for l in _read("/etc/os-release").splitlines() if l.startswith("PRETTY_NAME=")), "")
+    try:
+        s = _socket.socket(_socket.AF_INET, _socket.SOCK_DGRAM)
+        s.connect(("10.255.255.255", 1))
+        ip = s.getsockname()[0]
+        s.close()
+    except OSError:
+        ip = None
+    last, _ = local_store.query_events(limit=1)
+    connected = zaccess_client._bridge.get("connected")
+    return jsonify({
+        "hostname": platform.node(),
+        "ip": ip,
+        "model": _read("/proc/device-tree/model").strip("\x00\n ") or platform.machine(),
+        "os": os_name or f"{platform.system()} {platform.release()}",
+        "cpus": os.cpu_count(),
+        "load": [round(x, 2) for x in load] if load else None,
+        "memTotal": mem.get("MemTotal"), "memAvailable": mem.get("MemAvailable"),
+        "diskTotal": disk.total, "diskFree": disk.free,
+        "uptimeSeconds": int(float(uptime[0])) if uptime else None,
+        "cpuTempC": round(int(temp) / 1000, 1) if temp.isdigit() else None,
+        "version": _git("log", "-1", "--format=%h (%cd)", "--date=format:%d/%m/%Y"),
+        "zaccessUrl": (read_config().get("ZACCESS_SERVER_URL") or "").strip() or None,
+        "zaccessConnected": bool(connected()) if connected else False,
+        "go2rtc": bool(live_video.available),
+        "faceTerminals": len(face_terminals_store.list_terminals()),
+        "lastEvent": last[0].time if last else None,
+        "sensors": _sensor_status(),
+        "relays": {rid: bool(r.value) for rid, r in reles.items()},
+    })
+
+
 @app.route('/api/sensors')
 @admin_required
 def api_sensors():

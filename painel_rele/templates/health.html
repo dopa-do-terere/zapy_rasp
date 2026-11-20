@@ -2,45 +2,125 @@
 {% block title_suffix %} – Saúde{% endblock %}
 
 {% block page_title %}Saúde do dispositivo{% endblock %}
-{% block page_subtitle %}Resumo de sistema — CPU, memória, disco e uptime deste zapy.{% endblock %}
+{% block page_subtitle %}Conexão, sistema, portas e sensores deste zapy. Atualiza a cada 10 s.{% endblock %}
+
+{% block extra_head %}
+<style>
+    .health { display: flex; flex-direction: column; gap: 16px; max-width: 980px; }
+    .health .panel { margin: 0; }
+    .metrics { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 10px; }
+    .metric { border: 1px solid var(--border); border-radius: var(--radius-md); padding: 12px; display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+    .metric .label { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.03em; color: var(--muted-foreground); font-weight: 600; }
+    .metric .value { font-size: 0.95rem; font-weight: 700; color: var(--foreground); overflow-wrap: anywhere; }
+    .metric .sub { font-size: 0.72rem; color: var(--muted-foreground); }
+    .bar { height: 6px; border-radius: 999px; background: var(--muted); overflow: hidden; margin-top: 2px; }
+    .bar > span { display: block; height: 100%; background: var(--primary); }
+    .bar.warn > span { background: #f59e0b; }
+    .bar.bad > span { background: var(--destructive); }
+    .dot { display: inline-block; width: 8px; height: 8px; border-radius: 999px; margin-right: 6px; background: var(--muted-foreground); }
+    .dot.ok { background: var(--success); }
+    .dot.bad { background: var(--destructive); }
+    .io { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
+    .io .metric .value { font-size: 0.85rem; }
+</style>
+{% endblock %}
 
 {% block content %}
-<div class="page-content narrow" style="padding:0; max-width:680px;">
+<div class="health">
     <section class="panel">
         <div class="panel-header">
-            <span class="panel-title">Resumo do sistema</span>
+            <span class="panel-title">Conexão</span>
+            <span class="panel-sub" id="updatedAt"></span>
         </div>
-        <div class="grid">
-            <div class="metric">
-                <span class="label">Hostname</span>
-                <span class="value" id="hostValue">—</span>
-            </div>
-            <div class="metric">
-                <span class="label">Sistema</span>
-                <span class="value" id="platformValue">—</span>
-            </div>
-            <div class="metric">
-                <span class="label">CPU</span>
-                <span class="value" id="cpuValue">—</span>
-            </div>
-            <div class="metric">
-                <span class="label">Memória</span>
-                <span class="value" id="memValue">—</span>
-            </div>
-            <div class="metric">
-                <span class="label">Disco</span>
-                <span class="value" id="diskValue">—</span>
-            </div>
-            <div class="metric">
-                <span class="label">Uptime</span>
-                <span class="value" id="uptimeValue">—</span>
-            </div>
-            <div class="metric">
-                <span class="label">Temp. CPU</span>
-                <span class="value" id="tempValue">—</span>
-            </div>
+        <div class="metrics">
+            <div class="metric"><span class="label">ZAccess</span><span class="value" id="zaccess">—</span><span class="sub" id="zaccessUrl"></span></div>
+            <div class="metric"><span class="label">Versão do zapy</span><span class="value" id="version">—</span></div>
+            <div class="metric"><span class="label">Vídeo (go2rtc)</span><span class="value" id="go2rtc">—</span></div>
+            <div class="metric"><span class="label">Terminais faciais</span><span class="value" id="terminals">—</span><span class="sub" id="lastEvent"></span></div>
         </div>
-        <p class="section-caption">Em breve podemos ligar esta tela à API de saúde do ZAccess. Por enquanto, os valores podem ser preenchidos via `/api/health-local` se você decidir implementar.</p>
+    </section>
+
+    <section class="panel">
+        <div class="panel-header"><span class="panel-title">Sistema</span></div>
+        <div class="metrics">
+            <div class="metric"><span class="label">Aparelho</span><span class="value" id="host">—</span><span class="sub" id="model"></span></div>
+            <div class="metric"><span class="label">Sistema</span><span class="value" id="os">—</span><span class="sub" id="ip"></span></div>
+            <div class="metric"><span class="label">CPU</span><span class="value" id="cpu">—</span><div class="bar" id="cpuBar"><span></span></div></div>
+            <div class="metric"><span class="label">Temperatura</span><span class="value" id="temp">—</span><div class="bar" id="tempBar"><span></span></div></div>
+            <div class="metric"><span class="label">Memória</span><span class="value" id="mem">—</span><div class="bar" id="memBar"><span></span></div></div>
+            <div class="metric"><span class="label">Disco</span><span class="value" id="disk">—</span><div class="bar" id="diskBar"><span></span></div></div>
+            <div class="metric"><span class="label">Ligado há</span><span class="value" id="uptime">—</span></div>
+        </div>
+    </section>
+
+    <section class="panel">
+        <div class="panel-header"><span class="panel-title">Relés e entradas</span><span class="panel-sub">1–4 sensores de porta, 5–8 botões</span></div>
+        <div class="io" id="relays"></div>
+        <div class="io" id="sensors" style="margin-top:8px;"></div>
     </section>
 </div>
+{% endblock %}
+
+{% block extra_body %}
+<script>
+(function() {
+    function $(id) { return document.getElementById(id); }
+    function esc(s) {
+        return String(s == null ? '' : s).replace(/[&<>"']/g, function(c) {
+            return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+        });
+    }
+    function gb(b) { return b == null ? '—' : (b / 1073741824).toFixed(1) + ' GB'; }
+    function bar(id, pct, warn, bad) {
+        var el = $(id);
+        if (pct == null) { el.style.display = 'none'; return; }
+        el.style.display = '';
+        el.className = 'bar' + (pct >= bad ? ' bad' : (pct >= warn ? ' warn' : ''));
+        el.firstElementChild.style.width = Math.max(0, Math.min(100, pct)) + '%';
+    }
+    function dur(s) {
+        if (s == null) return '—';
+        var d = Math.floor(s / 86400), h = Math.floor(s % 86400 / 3600), m = Math.floor(s % 3600 / 60);
+        return (d ? d + 'd ' : '') + (d || h ? h + 'h ' : '') + m + 'min';
+    }
+    function load() {
+        fetch('/api/health-local').then(function(r) { return r.json(); }).then(function(h) {
+            $('zaccess').innerHTML = '<span class="dot ' + (h.zaccessConnected ? 'ok' : 'bad') + '"></span>' + (h.zaccessConnected ? 'Conectado' : 'Desconectado');
+            $('zaccessUrl').textContent = h.zaccessUrl || 'servidor não configurado';
+            $('version').textContent = h.version || '—';
+            $('go2rtc').innerHTML = '<span class="dot ' + (h.go2rtc ? 'ok' : 'bad') + '"></span>' + (h.go2rtc ? 'Instalado' : 'Não instalado');
+            $('terminals').textContent = h.faceTerminals;
+            $('lastEvent').textContent = h.lastEvent ? 'Último evento: ' + new Date(h.lastEvent).toLocaleString('pt-BR') : 'Nenhum evento ainda';
+            $('host').textContent = h.hostname || '—';
+            $('model').textContent = h.model || '';
+            $('os').textContent = h.os || '—';
+            $('ip').textContent = h.ip ? 'IP ' + h.ip : '';
+            var cpuPct = h.load && h.cpus ? Math.round(h.load[0] / h.cpus * 100) : null;
+            $('cpu').textContent = h.load ? cpuPct + '% (carga ' + h.load.join(' / ') + ')' : '—';
+            bar('cpuBar', cpuPct, 70, 90);
+            $('temp').textContent = h.cpuTempC != null ? h.cpuTempC + ' °C' : '—';
+            bar('tempBar', h.cpuTempC, 65, 78);
+            var memUsed = h.memTotal ? h.memTotal - h.memAvailable : null;
+            var memPct = h.memTotal ? Math.round(memUsed / h.memTotal * 100) : null;
+            $('mem').textContent = h.memTotal ? gb(memUsed) + ' de ' + gb(h.memTotal) + ' (' + memPct + '%)' : '—';
+            bar('memBar', memPct, 75, 90);
+            var diskPct = h.diskTotal ? Math.round((h.diskTotal - h.diskFree) / h.diskTotal * 100) : null;
+            $('disk').textContent = gb(h.diskFree) + ' livres de ' + gb(h.diskTotal);
+            bar('diskBar', diskPct, 80, 92);
+            $('uptime').textContent = dur(h.uptimeSeconds);
+            $('relays').innerHTML = Object.keys(h.relays || {}).map(function(k) {
+                var on = h.relays[k];
+                return '<div class="metric"><span class="label">Relé ' + esc(k) + '</span><span class="value"><span class="dot ' + (on ? 'ok' : '') + '"></span>' + (on ? 'Ligado' : 'Desligado') + '</span></div>';
+            }).join('');
+            $('sensors').innerHTML = Object.keys(h.sensors || {}).map(function(k) {
+                var v = h.sensors[k], alert = v === 'Aberto' || v === 'Pressionado';
+                return '<div class="metric"><span class="label">' + (parseInt(k, 10) <= 4 ? 'Sensor ' : 'Botão ') + esc(k) + '</span><span class="value"><span class="dot ' + (alert ? 'bad' : 'ok') + '"></span>' + esc(v) + '</span></div>';
+            }).join('');
+            $('updatedAt').textContent = 'Atualizado ' + new Date().toLocaleTimeString('pt-BR');
+        }).catch(function() { $('updatedAt').textContent = 'Sem resposta do zapy'; });
+    }
+    load();
+    setInterval(load, 10000);
+})();
+</script>
 {% endblock %}

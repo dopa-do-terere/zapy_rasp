@@ -342,6 +342,7 @@ def run_zaccess_client(
             return True
 
         _bridge["ack_notice"] = _ack_notice
+        _bridge["connected"] = lambda: bool(sio.connected)
 
         @sio.on("device:config", namespace=NAMESPACE)
         def device_config(data):

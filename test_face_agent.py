@@ -2691,3 +2691,31 @@ class DoorEventsTest(unittest.TestCase):
         ev = self._events()
         self.assertEqual(len(ev), 1)
         self.assertEqual((ev[0]["terminalName"], ev[0]["name"], ev[0]["label"]), ("Porta 1", "Aberta pelo Cockpit (joao)", "Acionada"))
+
+
+class HealthAndConfigPagesTest(unittest.TestCase):
+    def setUp(self):
+        os.environ.setdefault("GPIOZERO_PIN_FACTORY", "mock")
+        with patch("face_agent.LocalStore", MagicMock()):
+            import app as app_module
+        self.m = app_module
+        self.client = app_module.app.test_client()
+        with self.client.session_transaction() as sess:
+            sess["logged_in"] = True
+            sess["role"] = "admin"
+
+    def test_health_local_returns_metrics(self):
+        with patch.object(self.m.local_store, "query_events", return_value=([], 0)):
+            j = self.client.get("/api/health-local").get_json()
+        for k in ("hostname", "diskTotal", "diskFree", "zaccessConnected", "sensors", "relays", "version"):
+            self.assertIn(k, j)
+        self.assertEqual(len(j["sensors"]), 8)
+        self.assertIn('id="zaccess"', self.client.get("/health").get_data(as_text=True))
+
+    def test_config_page_has_tabs_and_relay_table(self):
+        html = self.client.get("/config").get_data(as_text=True)
+        for tab in ("conexao", "portas", "video", "sistema"):
+            self.assertIn('data-tab="' + tab + '"', html)
+        for n in "1234":
+            self.assertIn('id="PULSE_RELE_' + n + '"', html)
+            self.assertIn('class="cockpit-relay" value="' + n + '"', html)

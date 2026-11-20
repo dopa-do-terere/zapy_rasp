@@ -2,133 +2,180 @@
 {% block title_suffix %} – Configurações{% endblock %}
 
 {% block page_title %}Configurações{% endblock %}
-{% block page_subtitle %}Servidor ZAccess, pulsos dos relés e o que o porteiro pode abrir no cockpit.{% endblock %}
+{% block page_subtitle %}Conexão com o ZAccess, portas, vídeo e atualização deste zapy.{% endblock %}
 
 {% block extra_head %}
 <style>
-    .page-content.narrow { display: flex; flex-direction: column; gap: 18px; }
+    .cfg { display: grid; grid-template-columns: 210px minmax(0, 760px); gap: 20px; align-items: start; }
+    .cfg-tabs { display: flex; flex-direction: column; gap: 4px; position: sticky; top: 20px; }
+    .cfg-tab {
+        display: flex; flex-direction: column; align-items: flex-start; gap: 2px; text-align: left;
+        border: 1px solid transparent; background: transparent; border-radius: var(--radius-md);
+        padding: 10px 12px; cursor: pointer; font-family: var(--font-sans); color: var(--muted-foreground);
+    }
+    .cfg-tab strong { font-size: 0.86rem; color: var(--foreground); font-weight: 600; }
+    .cfg-tab span { font-size: 0.72rem; }
+    .cfg-tab:hover { background: var(--muted); }
+    .cfg-tab.active { background: var(--accent); border-color: var(--primary); }
+    .cfg-tab.active strong { color: var(--primary); }
+    .cfg-pane { display: none; flex-direction: column; gap: 16px; }
+    .cfg-pane.active { display: flex; }
+    .cfg-pane .panel { margin: 0; }
+    .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0 16px; }
+    .relay-table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+    .relay-table th { text-align: left; font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.03em; color: var(--muted-foreground); font-weight: 600; padding: 6px 8px; border-bottom: 1px solid var(--border); }
+    .relay-table td { padding: 8px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+    .relay-table tr:last-child td { border-bottom: none; }
+    .relay-table input[type=number] { width: 110px; }
+    .relay-table .chk { margin: 0; }
+    @media (max-width: 860px) {
+        .cfg { grid-template-columns: minmax(0, 1fr); }
+        .cfg-tabs { position: static; flex-direction: row; overflow-x: auto; }
+        .cfg-tab span { display: none; }
+        .grid2 { grid-template-columns: 1fr; }
+    }
 </style>
 {% endblock %}
 
 {% block content %}
-<div class="page-content narrow" style="padding:0; max-width:640px;">
-    <section class="panel">
-        <div class="panel-header">
-            <span class="panel-title">Configuração ZAccess</span>
-            <span class="panel-sub">Servidor, serial e pulsos</span>
-        </div>
-        <p class="panel-desc">Defina o servidor ZAccess, identifique este dispositivo e configure os tempos de pulso dos relés.</p>
-        <div class="field">
-            <label for="ZACCESS_SERVER_URL">URL do servidor ZAccess</label>
-            <input type="url" id="ZACCESS_SERVER_URL" placeholder="http://192.168.1.100:3000" autocomplete="off">
-            <p class="hint">Ex.: http://IP-DO-SERVIDOR:3000</p>
-        </div>
-        <div class="field">
-            <label for="ZACCESS_DEVICE_SERIAL">Número de série do dispositivo</label>
-            <input type="text" id="ZACCESS_DEVICE_SERIAL" placeholder="ZAPY-001" autocomplete="off">
-        </div>
-        <div class="field">
-            <label for="ZACCESS_DEVICE_TOKEN">Token do dispositivo (opcional)</label>
-            <input type="password" id="ZACCESS_DEVICE_TOKEN" placeholder="Deixe em branco se não usar" autocomplete="off">
-        </div>
-        <div class="field">
-            <label for="PORT">Porta do painel</label>
-            <input type="number" id="PORT" placeholder="3080" min="1" max="65535" autocomplete="off">
-            <p class="hint">Reinicie o serviço após alterar a porta.</p>
-        </div>
-        <p class="panel-desc" style="margin-top:8px;">Pulso por relé (segundos). 0 ou vazio = modo toggle normal.</p>
-        <div class="field">
-            <label for="PULSE_RELE_1">Relé 1</label>
-            <input type="number" id="PULSE_RELE_1" placeholder="0 = desativado" min="0" max="300" step="0.5" autocomplete="off">
-        </div>
-        <div class="field">
-            <label for="PULSE_RELE_2">Relé 2</label>
-            <input type="number" id="PULSE_RELE_2" placeholder="0 = desativado" min="0" max="300" step="0.5" autocomplete="off">
-        </div>
-        <div class="field">
-            <label for="PULSE_RELE_3">Relé 3</label>
-            <input type="number" id="PULSE_RELE_3" placeholder="0 = desativado" min="0" max="300" step="0.5" autocomplete="off">
-        </div>
-        <div class="field">
-            <label for="PULSE_RELE_4">Relé 4</label>
-            <input type="number" id="PULSE_RELE_4" placeholder="0 = desativado" min="0" max="300" step="0.5" autocomplete="off">
-        </div>
-        <div class="btn-row">
-            <button type="button" class="btn btn-primary" id="saveConfig">Salvar configuração</button>
-            <button type="button" class="btn btn-outline" id="restartService" title="Reinicia o serviço Zapy (aplicar config ZAccess)">Reiniciar serviço</button>
-        </div>
-        <div class="msg" id="configMsg"></div>
-    </section>
+<div class="cfg">
+    <nav class="cfg-tabs" id="cfgTabs">
+        <button type="button" class="cfg-tab" data-tab="conexao"><strong>Conexão</strong><span>Servidor ZAccess e painel</span></button>
+        <button type="button" class="cfg-tab" data-tab="portas"><strong>Portas</strong><span>Pulso e acesso do porteiro</span></button>
+        <button type="button" class="cfg-tab" data-tab="video"><strong>Vídeo ao vivo</strong><span>Câmeras no Cockpit</span></button>
+        <button type="button" class="cfg-tab" data-tab="sistema"><strong>Sistema</strong><span>Atualizar e reiniciar</span></button>
+    </nav>
 
-    <section class="panel">
-        <div class="panel-header">
-            <span class="panel-title">Cockpit do porteiro</span>
-            <span class="panel-sub">Quais portas ele pode abrir</span>
+    <div>
+        <div class="cfg-pane" data-pane="conexao">
+            <section class="panel">
+                <div class="panel-header">
+                    <span class="panel-title">Servidor ZAccess</span>
+                    <span class="panel-sub">Vale depois de reiniciar o serviço</span>
+                </div>
+                <div class="field">
+                    <label for="ZACCESS_SERVER_URL">URL do servidor ZAccess</label>
+                    <input type="url" id="ZACCESS_SERVER_URL" placeholder="https://api.zroot.online" autocomplete="off">
+                </div>
+                <div class="grid2">
+                    <div class="field">
+                        <label for="ZACCESS_DEVICE_SERIAL">Número de série do dispositivo</label>
+                        <input type="text" id="ZACCESS_DEVICE_SERIAL" placeholder="ZAPY-001" autocomplete="off">
+                    </div>
+                    <div class="field">
+                        <label for="ZACCESS_DEVICE_TOKEN">Token do dispositivo</label>
+                        <input type="password" id="ZACCESS_DEVICE_TOKEN" placeholder="Opcional" autocomplete="off">
+                    </div>
+                </div>
+                <div class="field">
+                    <label for="PORT">Porta do painel do zapy</label>
+                    <input type="number" id="PORT" placeholder="3080" min="1" max="65535" autocomplete="off" style="max-width:160px;">
+                </div>
+                <div class="btn-row">
+                    <button type="button" class="btn btn-primary" id="saveConfig">Salvar</button>
+                    <button type="button" class="btn btn-outline" id="restartService" title="Reinicia o serviço Zapy (aplica a conexão)">Salvar e reiniciar o serviço</button>
+                </div>
+                <div class="msg" id="configMsg"></div>
+            </section>
         </div>
-        <p class="panel-desc">
-            Desmarque os relés que o porteiro NÃO deve conseguir abrir pelo <a href="/cockpit">cockpit</a>.
-            Admin sempre vê e abre todos, independente disso. Terminais faciais têm o
-            mesmo controle em <a href="/face-terminals">Terminais faciais</a> (checkbox "Liberado pro porteiro").
-        </p>
-        <div class="checks" id="cockpitRelayChecks">
-            <label class="chk"><input type="checkbox" class="cockpit-relay" value="1"> Relé 1</label>
-            <label class="chk"><input type="checkbox" class="cockpit-relay" value="2"> Relé 2</label>
-            <label class="chk"><input type="checkbox" class="cockpit-relay" value="3"> Relé 3</label>
-            <label class="chk"><input type="checkbox" class="cockpit-relay" value="4"> Relé 4</label>
-        </div>
-        <div class="btn-row">
-            <button type="button" class="btn btn-primary" id="saveCockpitRelays">Salvar</button>
-        </div>
-        <div class="msg" id="cockpitRelaysMsg"></div>
-    </section>
 
-    <section class="panel">
-        <div class="panel-header">
-            <span class="panel-title">Vídeo ao vivo no Cockpit</span>
-            <span class="panel-sub">Terminais faciais do cadastro local</span>
+        <div class="cfg-pane" data-pane="portas">
+            <section class="panel">
+                <div class="panel-header">
+                    <span class="panel-title">Relés</span>
+                    <span class="panel-sub">Vale na hora</span>
+                </div>
+                <p class="panel-desc">
+                    Pulso: quantos segundos o relé fica acionado (0 ou vazio = liga e desliga a cada clique).
+                    Porteiro: se ele pode abrir essa porta pelo <a href="/cockpit">Cockpit</a> (admin sempre pode).
+                    Terminais faciais têm o mesmo controle em <a href="/face-terminals">Terminais faciais</a>.
+                </p>
+                <table class="relay-table">
+                    <thead><tr><th>Relé</th><th>Pulso (s)</th><th>Porteiro pode abrir</th></tr></thead>
+                    <tbody>
+                        {% for n in ['1', '2', '3', '4'] %}
+                        <tr>
+                            <td><strong>Relé {{ n }}</strong></td>
+                            <td><input type="number" id="PULSE_RELE_{{ n }}" placeholder="0" min="0" max="300" step="0.5" autocomplete="off"></td>
+                            <td><label class="chk"><input type="checkbox" class="cockpit-relay" value="{{ n }}"> Sim</label></td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+                <div class="btn-row">
+                    <button type="button" class="btn btn-primary" id="saveCockpitRelays">Salvar</button>
+                </div>
+                <div class="msg" id="cockpitRelaysMsg"></div>
+            </section>
         </div>
-        <p class="panel-desc">
-            Vale na hora, sem reiniciar. Cada terminal também pode ser desligado em
-            <a href="/face-terminals">Terminais faciais</a> ("Vídeo ao vivo").
-        </p>
-        {% if not go2rtc_available %}
-        <p class="panel-desc" style="color:var(--destructive);">go2rtc não instalado — rode o install.sh de novo para habilitar o vídeo.</p>
-        {% endif %}
-        <div class="checks">
-            <label class="chk"><input type="checkbox" id="liveEnabled"{% if not go2rtc_available %} disabled{% endif %}> Vídeo ao vivo ativo</label>
-        </div>
-        <div class="field">
-            <label for="liveMaxViewers">Limite de visualizações simultâneas (0 = ilimitado)</label>
-            <input type="number" id="liveMaxViewers" min="0" step="1" placeholder="0"{% if not go2rtc_available %} disabled{% endif %}>
-            <p class="hint">Cada vídeo aberto conta, inclusive as miniaturas da lista do Cockpit.</p>
-        </div>
-        <div class="btn-row">
-            <button type="button" class="btn btn-primary" id="saveLive"{% if not go2rtc_available %} disabled{% endif %}>Salvar</button>
-        </div>
-        <div class="msg" id="liveMsg"></div>
-    </section>
 
-    <section class="panel">
-        <div class="panel-header">
-            <span class="panel-title">Atualização do zapy</span>
-            <span class="panel-sub" id="updCurrent"></span>
+        <div class="cfg-pane" data-pane="video">
+            <section class="panel">
+                <div class="panel-header">
+                    <span class="panel-title">Vídeo ao vivo no Cockpit</span>
+                    <span class="panel-sub">Vale na hora</span>
+                </div>
+                <p class="panel-desc">
+                    Cada terminal também pode ser desligado em <a href="/face-terminals">Terminais faciais</a> ("Vídeo ao vivo").
+                </p>
+                {% if not go2rtc_available %}
+                <p class="panel-desc" style="color:var(--destructive);">go2rtc não instalado. Rode o install.sh de novo para habilitar o vídeo.</p>
+                {% endif %}
+                <div class="checks">
+                    <label class="chk"><input type="checkbox" id="liveEnabled"{% if not go2rtc_available %} disabled{% endif %}> Vídeo ao vivo ativo</label>
+                </div>
+                <div class="field">
+                    <label for="liveMaxViewers">Limite de vídeos abertos ao mesmo tempo (0 = sem limite)</label>
+                    <input type="number" id="liveMaxViewers" min="0" step="1" placeholder="0" style="max-width:160px;"{% if not go2rtc_available %} disabled{% endif %}>
+                    <p class="hint">Cada câmera aberta no mosaico do Cockpit conta.</p>
+                </div>
+                <div class="btn-row">
+                    <button type="button" class="btn btn-primary" id="saveLive"{% if not go2rtc_available %} disabled{% endif %}>Salvar</button>
+                </div>
+                <div class="msg" id="liveMsg"></div>
+            </section>
         </div>
-        <p class="panel-desc">
-            Baixa a versão mais nova, faz backup em ~/zapy-backups e reinicia o zapy (portas e terminais
-            ficam cerca de 15 s sem o painel). Se o zapy não voltar, ele volta sozinho para a versão anterior.
-        </p>
-        <div class="btn-row">
-            <button type="button" class="btn btn-outline" id="updCheck">Verificar atualização</button>
-            <button type="button" class="btn btn-primary" id="updRun">Atualizar agora</button>
+
+        <div class="cfg-pane" data-pane="sistema">
+            <section class="panel">
+                <div class="panel-header">
+                    <span class="panel-title">Atualização do zapy</span>
+                    <span class="panel-sub" id="updCurrent"></span>
+                </div>
+                <p class="panel-desc">
+                    Baixa a versão mais nova, faz backup em ~/zapy-backups e reinicia o zapy (portas e terminais
+                    ficam cerca de 15 s sem o painel). Se o zapy não voltar, ele volta sozinho para a versão anterior.
+                </p>
+                <div class="btn-row">
+                    <button type="button" class="btn btn-outline" id="updCheck">Verificar atualização</button>
+                    <button type="button" class="btn btn-primary" id="updRun">Atualizar agora</button>
+                </div>
+                <div class="msg" id="updMsg"></div>
+                <pre id="updLog" style="display:none; max-height:320px; overflow:auto; font-size:0.75rem; white-space:pre-wrap; background:var(--muted, #f4f4f5); padding:10px; border-radius:8px;"></pre>
+            </section>
         </div>
-        <div class="msg" id="updMsg"></div>
-        <pre id="updLog" style="display:none; max-height:320px; overflow:auto; font-size:0.75rem; white-space:pre-wrap; background:var(--muted, #f4f4f5); padding:10px; border-radius:8px;"></pre>
-    </section>
+    </div>
 </div>
 {% endblock %}
 
 {% block extra_body %}
 <script>
+(function() {
+    var tabs = document.querySelectorAll('.cfg-tab'), panes = document.querySelectorAll('.cfg-pane');
+    function show(name) {
+        if (!document.querySelector('.cfg-pane[data-pane="' + name + '"]')) name = 'conexao';
+        tabs.forEach(function(t) { t.classList.toggle('active', t.dataset.tab === name); });
+        panes.forEach(function(p) { p.classList.toggle('active', p.dataset.pane === name); });
+    }
+    document.getElementById('cfgTabs').addEventListener('click', function(e) {
+        var t = e.target.closest('.cfg-tab');
+        if (!t) return;
+        history.replaceState(null, '', '#' + t.dataset.tab);
+        show(t.dataset.tab);
+    });
+    show((location.hash || '#conexao').slice(1));
+})();
+
 (function() {
     var cur = document.getElementById('updCurrent'), msg = document.getElementById('updMsg');
     var logEl = document.getElementById('updLog'), runBtn = document.getElementById('updRun');
@@ -196,7 +243,7 @@
     document.getElementById('saveConfig').addEventListener('click', function() {
         var btn = this;
         var data = {};
-        configKeys.forEach(function(k) {
+        ['ZACCESS_SERVER_URL', 'ZACCESS_DEVICE_SERIAL', 'ZACCESS_DEVICE_TOKEN', 'PORT'].forEach(function(k) {
             var el = document.getElementById(k);
             if (el) data[k] = el.value.trim();
         });
@@ -221,8 +268,13 @@
     document.getElementById('restartService').addEventListener('click', function() {
         var btn = this;
         btn.disabled = true;
-        showMsg('Reiniciando o serviço...', false);
-        fetch('/api/restart', { method: 'POST' })
+        showMsg('Salvando e reiniciando o serviço...', false);
+        var data = {};
+        ['ZACCESS_SERVER_URL', 'ZACCESS_DEVICE_SERIAL', 'ZACCESS_DEVICE_TOKEN', 'PORT'].forEach(function(k) {
+            data[k] = document.getElementById(k).value.trim();
+        });
+        fetch('/api/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) })
+            .then(function(r) { if (!r.ok) throw new Error('save'); return fetch('/api/restart', { method: 'POST' }); })
             .then(function(r) { return r.json(); })
             .then(function(data) {
                 showMsg(data.message || 'Reinício em andamento. Reconecte em alguns segundos.');
@@ -267,11 +319,17 @@
         fetch('/api/config', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ COCKPIT_RELAYS: value })
+            body: JSON.stringify({
+                COCKPIT_RELAYS: value,
+                PULSE_RELE_1: document.getElementById('PULSE_RELE_1').value.trim(),
+                PULSE_RELE_2: document.getElementById('PULSE_RELE_2').value.trim(),
+                PULSE_RELE_3: document.getElementById('PULSE_RELE_3').value.trim(),
+                PULSE_RELE_4: document.getElementById('PULSE_RELE_4').value.trim()
+            })
         })
             .then(function(r) { return r.json().then(function(j) { return { ok: r.ok, json: j }; }); })
             .then(function(o) {
-                if (o.ok && o.json.success) showCockpitMsg('Salvo — já vale no próximo carregamento do cockpit.');
+                if (o.ok && o.json.success) showCockpitMsg('Salvo.');
                 else showCockpitMsg(o.json.message || 'Erro ao salvar.', true);
             })
             .catch(function() { showCockpitMsg('Erro de conexão.', true); })

@@ -62,6 +62,17 @@ for t in store.list_terminals():
             print(f"  {path} {r.status_code} {r.text[:300]}")
         except Exception as e:
             print(f"  {path} erro: {e}")
+    for label, body in (
+        ("ultimos access_logs", {"object": "access_logs", "order": ["id", "descending"], "limit": 5}),
+        ("ultimos access_logs (sem order)", {"object": "access_logs", "limit": 3}),
+        ("poll do zapy", {"object": "access_logs", "fields": ["id", "time", "event", "user_id", "portal_id"],
+                          "where": {"access_logs": {"id": {">": 0}}}, "order": ["id", "ascending"], "limit": 3}),
+    ):
+        try:
+            r = c._call("/load_objects.fcgi", json_body=body)
+            print(f"  {label}: {r.status_code} {r.text[:600]}")
+        except Exception as e:
+            print(f"  {label}: erro {e}")
     port = int(t.get("rtsp_port") or 554)
     p = (t.get("rtsp_path") or "").strip() or "/main_stream"
     print(f"  DESCRIBE {p} sem senha: {describe(t['host'], port, p)}")

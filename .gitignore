@@ -50,3 +50,7 @@ bin/
 
 # Roster local do face_agent (SQLite) — fotos + agenda, estado local do dispositivo
 face_agent.sqlite3*
+
+# Avisos dos moradores para a portaria (vem do ZAccess)
+notices.json
+notices.json.tmp

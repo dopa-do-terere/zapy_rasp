@@ -18,6 +18,8 @@ import requests
 from simple_websocket import ConnectionClosed
 
 import face_terminals_store
+import notices_store
+import zaccess_client
 from local_event_pollers import sync_local_event_pollers
 import vehicle_antennas_store
 from face_agent.errors import FaceProvisioningError
@@ -2518,3 +2520,48 @@ class Go2rtcInstallScriptsTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PortariaNoticesTest(unittest.TestCase):
+    def setUp(self):
+        fd, self.path = tempfile.mkstemp(suffix=".json")
+        os.close(fd)
+        os.remove(self.path)
+        self.p = patch.object(notices_store, "_PATH", self.path)
+        self.p.start()
+
+    def tearDown(self):
+        self.p.stop()
+        for f in (self.path, self.path + ".tmp"):
+            if os.path.exists(f):
+                os.remove(f)
+
+    def test_store_sync_upsert_and_order(self):
+        today = notices_store._today()
+        notices_store.replace_all([
+            {"id": "a" * 24, "date": today, "time": "10:00", "status": "acknowledged"},
+            {"id": "b" * 24, "date": today, "time": None, "status": "pending"},
+            {"id": "c" * 24, "date": "2000-01-01", "status": "pending"},  # passado: some
+            {"bad": 1},
+        ])
+        notices_store.upsert({"id": "d" * 24, "date": today, "time": "08:00", "status": "pending"})
+        self.assertEqual([n["id"][0] for n in notices_store.list_upcoming()], ["d", "b", "a"])
+        notices_store.upsert({"id": "d" * 24, "date": today, "time": "08:00", "status": "acknowledged"})
+        self.assertEqual(notices_store.list_upcoming()[0]["id"][0], "b")
+
+    def test_cockpit_ack_route(self):
+        os.environ.setdefault("GPIOZERO_PIN_FACTORY", "mock")
+        with patch("face_agent.LocalStore", MagicMock()):
+            import app as app_module
+        client = app_module.app.test_client()
+        with client.session_transaction() as sess:
+            sess["logged_in"] = True
+            sess["role"] = "porteiro"
+            sess["username"] = "joao"
+        ack = MagicMock(return_value=True)
+        with patch.dict(zaccess_client._bridge, {"ack_notice": ack}):
+            self.assertEqual(client.post("/api/cockpit/notices/" + "f" * 24 + "/ack").status_code, 200)
+            ack.assert_called_once_with("f" * 24, "joao")
+            self.assertEqual(client.post("/api/cockpit/notices/xyz/ack").status_code, 400)
+            ack.return_value = False
+            self.assertEqual(client.post("/api/cockpit/notices/" + "f" * 24 + "/ack").status_code, 503)

@@ -1,6 +1,7 @@
 import csv
 import io
 import os
+import re
 import logging
 import secrets
 import subprocess
@@ -21,6 +22,8 @@ from zaccess_client import start_zaccess_client_in_background, submit_controlid_
 from local_event_pollers import start_local_event_pollers_in_background
 from config_env import read_config, get_config_for_display, write_config
 import face_terminals_store
+import notices_store
+import zaccess_client
 import vehicle_antennas_store
 import users_store
 from face_agent import FaceProvisioningError, LocalStore, create_face_client
@@ -574,6 +577,26 @@ def cockpit_page():
         if is_admin or a.get("cockpit_enabled", True)
     ]
     return render_template('cockpit.html', relays=relays, terminals=terminals, antennas=antennas)
+
+
+@app.route('/api/cockpit/notices')
+@login_required
+def api_cockpit_notices():
+    """Avisos dos moradores (de hoje em diante) que vieram do ZAccess."""
+    return jsonify({"notices": notices_store.list_upcoming()})
+
+
+@app.route('/api/cockpit/notices/<notice_id>/ack', methods=['POST'])
+@login_required
+def api_cockpit_notice_ack(notice_id):
+    """Porteiro marca "Ciente": vai para o ZAccess, que avisa o morador e devolve
+    notice:updated (atualiza a lista)."""
+    if not re.fullmatch(r"[0-9a-f]{24}", notice_id or ""):
+        return jsonify({"success": False, "message": "aviso inválido"}), 400
+    ack = zaccess_client._bridge.get("ack_notice")
+    if not ack or not ack(notice_id, session.get("username") or "Portaria"):
+        return jsonify({"success": False, "message": "sem conexão com o ZAccess; tente de novo"}), 503
+    return jsonify({"success": True})
 
 
 @app.route('/api/cockpit/relays/<id>/open', methods=['POST'])

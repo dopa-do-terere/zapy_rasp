@@ -6,6 +6,17 @@
 
 {% block extra_head %}
 <style>
+.notices-list { display: flex; flex-direction: column; gap: 10px; }
+.notice-item { border: 1px solid var(--border, #e5e7eb); border-radius: 12px; padding: 12px 14px; display: flex; gap: 12px; align-items: flex-start; justify-content: space-between; }
+.notice-item.pending { border-color: var(--primary, #7c3aed); }
+.notice-main { min-width: 0; }
+.notice-title { font-weight: 700; }
+.notice-meta { font-size: 0.8rem; opacity: 0.75; margin-top: 2px; }
+.notice-msg { margin-top: 6px; white-space: pre-wrap; word-break: break-word; }
+.notice-side { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; flex-shrink: 0; }
+.notice-side .door-msg { font-size: 0.75rem; }
+</style>
+<style>
     .door-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(168px, 1fr)); gap: 10px; }
     .door-card {
         background: var(--card); border: 1px solid var(--border); border-radius: var(--radius-lg);
@@ -219,6 +230,16 @@
     <section class="column">
         <div class="panel">
             <div class="panel-header">
+                <span class="panel-title panel-title-row">{{ icons.users() }}Avisos dos moradores</span>
+                <span class="panel-sub" id="noticesCount"></span>
+            </div>
+            <p class="panel-desc tight">Quem vem hoje e nos próximos dias. Marque "Ciente" e o morador é avisado no app.</p>
+            <div id="noticesList" class="notices-list"></div>
+            <p class="empty-hint" id="noticesEmpty" style="display:none;">Nenhum aviso de hoje em diante.</p>
+        </div>
+
+        <div class="panel">
+            <div class="panel-header">
                 <span class="panel-title panel-title-row">{{ icons.history() }}Eventos recentes</span>
                 <span class="live-chip"><span class="dot"></span>Ao vivo</span>
             </div>
@@ -269,6 +290,50 @@
             return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
         });
     }
+
+    // --- avisos dos moradores ---
+    var noticesList = document.getElementById('noticesList');
+    function noticeWhen(n) {
+        var today = new Date(Date.now() - 3 * 3600e3).toISOString().slice(0, 10);
+        var parts = n.date.split('-');
+        var d = n.date === today ? 'Hoje' : parts[2] + '/' + parts[1];
+        return d + (n.time ? ' às ' + n.time : '');
+    }
+    function renderNotices(list) {
+        document.getElementById('noticesEmpty').style.display = list.length ? 'none' : '';
+        var pending = list.filter(function(n) { return n.status === 'pending'; }).length;
+        document.getElementById('noticesCount').textContent = pending ? pending + ' pendente(s)' : '';
+        noticesList.innerHTML = list.map(function(n) {
+            var who = escapeHtml(n.authorName || 'Morador') + (n.unit ? ' · unidade ' + escapeHtml(n.unit) : '');
+            var side = n.status === 'pending'
+                ? '<button type="button" class="btn-open" data-ack="' + escapeHtml(n.id) + '">Ciente</button><div class="door-msg"></div>'
+                : '<span class="badge success">Ciente</span>';
+            return '<div class="notice-item ' + (n.status === 'pending' ? 'pending' : '') + '">' +
+                '<div class="notice-main"><div class="notice-title">' + escapeHtml(n.typeLabel || n.type) + ' — ' + escapeHtml(noticeWhen(n)) + '</div>' +
+                '<div class="notice-meta">' + who + '</div>' +
+                (n.message ? '<div class="notice-msg">' + escapeHtml(n.message) + '</div>' : '') +
+                '</div><div class="notice-side">' + side + '</div></div>';
+        }).join('');
+    }
+    function loadNotices() {
+        fetch('/api/cockpit/notices').then(function(r) { return r.json(); })
+            .then(function(j) { renderNotices(j.notices || []); }).catch(function() {});
+    }
+    noticesList.addEventListener('click', function(e) {
+        var btn = e.target.closest('[data-ack]');
+        if (!btn || btn.disabled) return;
+        btn.disabled = true;
+        var msg = btn.parentNode.querySelector('.door-msg');
+        fetch('/api/cockpit/notices/' + encodeURIComponent(btn.getAttribute('data-ack')) + '/ack', { method: 'POST' })
+            .then(function(r) { return r.json(); })
+            .then(function(j) {
+                if (j.success) { setTimeout(loadNotices, 1500); }
+                else { msg.textContent = j.message || 'Falha.'; btn.disabled = false; }
+            })
+            .catch(function() { msg.textContent = 'Falha.'; btn.disabled = false; });
+    });
+    loadNotices();
+    setInterval(loadNotices, 15000);
 
     // --- abrir porta / terminal ---
     function bindOpenButtons(gridId, urlFn) {

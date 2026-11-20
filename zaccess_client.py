@@ -14,6 +14,7 @@ from datetime import datetime, timedelta, timezone
 import socketio
 
 import face_terminals_store
+import notices_store
 import vehicle_antennas_store
 from face_agent import (
     EventsPoller,
@@ -320,6 +321,27 @@ def run_zaccess_client(
                 poller = EventsPoller(local_store, tid, fetch)
                 thread, stop_evt = poller.start(_emit_identified_events, interval_seconds=FACE_EVENTS_POLL_INTERVAL)
                 event_pollers[tid] = (thread, stop_evt)
+
+        # ---- Avisos dos moradores para a portaria (Cockpit) ----
+        @sio.on("notices:sync", namespace=NAMESPACE)
+        def notices_sync(data):
+            notices_store.replace_all((data or {}).get("notices") or [])
+
+        @sio.on("notice:new", namespace=NAMESPACE)
+        def notice_new(data):
+            notices_store.upsert(data)
+
+        @sio.on("notice:updated", namespace=NAMESPACE)
+        def notice_updated(data):
+            notices_store.upsert(data)
+
+        def _ack_notice(notice_id: str, by: str) -> bool:
+            if not sio.connected:
+                return False
+            sio.emit("notice:ack", {"noticeId": notice_id, "by": by}, namespace=NAMESPACE)
+            return True
+
+        _bridge["ack_notice"] = _ack_notice
 
         @sio.on("device:config", namespace=NAMESPACE)
         def device_config(data):

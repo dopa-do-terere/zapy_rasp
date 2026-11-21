@@ -30,9 +30,9 @@
                 {% endif %}
                 <a class="nav-item{{ ' active' if path == '/cockpit' }}" href="/cockpit">{{ icons.door_open() }}<span class="nav-label">Cockpit</span></a>
                 <a class="nav-item{{ ' active' if path == '/eventos' }}" href="/eventos">{{ icons.alert_triangle() }}<span class="nav-label">Eventos</span></a>
-                <a class="nav-item{{ ' active' if path == '/comunicados' }}" href="/comunicados">{{ icons.megaphone() }}<span class="nav-label">Comunicados</span><span class="nav-badge" id="badgeNotices" hidden></span></a>
-                <a class="nav-item{{ ' active' if path == '/encomendas' }}" href="/encomendas">{{ icons.package() }}<span class="nav-label">Encomendas</span><span class="nav-badge" id="badgeParcels" hidden></span></a>
-                <a class="nav-item{{ ' active' if path == '/reservas' }}" href="/reservas">{{ icons.calendar() }}<span class="nav-label">Reservas</span><span class="nav-badge info" id="badgeReservations" hidden></span></a>
+                {% if features.portariaNotices %}<a class="nav-item{{ ' active' if path == '/comunicados' }}" href="/comunicados">{{ icons.megaphone() }}<span class="nav-label">Comunicados</span><span class="nav-badge" id="badgeNotices" hidden></span></a>{% endif %}
+                {% if features.parcels %}<a class="nav-item{{ ' active' if path == '/encomendas' }}" href="/encomendas">{{ icons.package() }}<span class="nav-label">Encomendas</span><span class="nav-badge" id="badgeParcels" hidden></span></a>{% endif %}
+                {% if features.reservations %}<a class="nav-item{{ ' active' if path == '/reservas' }}" href="/reservas">{{ icons.calendar() }}<span class="nav-label">Reservas</span><span class="nav-badge info" id="badgeReservations" hidden></span></a>{% endif %}
                 {% if session.role == 'admin' %}
                 <a class="nav-item{{ ' active' if path == '/face-terminals' }}" href="/face-terminals">{{ icons.scan_face() }}<span class="nav-label">Terminais faciais</span></a>
                 <a class="nav-item{{ ' active' if path == '/vehicle-antennas' }}" href="/vehicle-antennas">{{ icons.car() }}<span class="nav-label">Antenas veiculares</span></a>

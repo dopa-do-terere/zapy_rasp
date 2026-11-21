@@ -17,6 +17,7 @@ import face_terminals_store
 import notices_store
 import parcels_store
 import reservations_store
+import features_store
 import vehicle_antennas_store
 from face_agent import (
     EventsPoller,
@@ -373,6 +374,10 @@ def run_zaccess_client(
         _bridge["parcel_call"] = _parcel_call
 
         # ---- Reservas de espacos (Cockpit, so leitura) ----
+        @sio.on("features:sync", namespace=NAMESPACE)
+        def features_sync(data):
+            features_store.save((data or {}).get("features") or {})
+
         @sio.on("reservations:sync", namespace=NAMESPACE)
         def reservations_sync(data):
             reservations_store.replace_all((data or {}).get("reservations") or [])

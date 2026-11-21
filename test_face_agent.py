@@ -21,6 +21,7 @@ import face_terminals_store
 import notices_store
 import parcels_store
 import reservations_store
+import features_store
 import zaccess_client
 from local_event_pollers import sync_local_event_pollers
 import vehicle_antennas_store
@@ -2717,6 +2718,47 @@ class PortariaPagesTest(unittest.TestCase):
     def test_pending_requires_login(self):
         anon = self.client.application.test_client()
         self.assertEqual(anon.get("/api/portaria/pending").status_code, 302)
+
+
+class FeaturesTest(unittest.TestCase):
+    """Funcoes desligadas no ZAccess somem do menu e das telas do zapy."""
+
+    def setUp(self):
+        fd, self.path = tempfile.mkstemp(suffix=".json")
+        os.close(fd)
+        os.remove(self.path)
+        self.p = patch.object(features_store, "_PATH", self.path)
+        self.p.start()
+        os.environ.setdefault("GPIOZERO_PIN_FACTORY", "mock")
+        with patch("face_agent.LocalStore", MagicMock()):
+            import app as app_module
+        self.client = app_module.app.test_client()
+        with self.client.session_transaction() as sess:
+            sess["logged_in"] = True
+            sess["role"] = "porteiro"
+            sess["username"] = "joao"
+
+    def tearDown(self):
+        self.p.stop()
+        for f in (self.path, self.path + ".tmp"):
+            if os.path.exists(f):
+                os.remove(f)
+
+    def test_default_all_on(self):
+        self.assertTrue(features_store.enabled("parcels"))
+        html = self.client.get("/cockpit").get_data(as_text=True)
+        self.assertIn('href="/encomendas"', html)
+
+    def test_disabled_hides_menu_blocks_page_and_pending(self):
+        features_store.save({"parcels": False, "reservations": True, "bad": "x"})
+        self.assertFalse(features_store.enabled("parcels"))
+        html = self.client.get("/cockpit").get_data(as_text=True)
+        self.assertNotIn('href="/encomendas"', html)
+        self.assertIn('href="/reservas"', html)
+        self.assertEqual(self.client.get("/encomendas").status_code, 302)
+        self.assertEqual(self.client.post("/api/cockpit/parcels", json={}).status_code, 403)
+        with patch.object(parcels_store, "snapshot", return_value={"parcels": [{"id": "c" * 24, "unit": "1", "status": "expected"}], "units": [], "carriers": []}):
+            self.assertEqual(self.client.get("/api/portaria/pending").get_json()["parcels"], [])
 
 
 class SystemUpdateRouteTest(unittest.TestCase):

@@ -25,6 +25,7 @@ import face_terminals_store
 import notices_store
 import parcels_store
 import reservations_store
+import features_store
 import zaccess_client
 import vehicle_antennas_store
 import users_store
@@ -86,6 +87,26 @@ def login_required(fn):
         return fn(*args, **kwargs)
 
     return wrapper
+
+
+@app.context_processor
+def _inject_features():
+    """Menu do porteiro esconde as telas desligadas no ZAccess (Locais > Funcoes)."""
+    return {"features": features_store.all_flags()}
+
+
+def feature_required(key, page=False):
+    """Tela ou API de uma funcao desligada: tela volta para o Cockpit, API responde 403."""
+    def deco(fn):
+        @wraps(fn)
+        def wrapper(*args, **kwargs):
+            if not features_store.enabled(key):
+                if page:
+                    return redirect("/cockpit")
+                return jsonify({"success": False, "message": "Função desativada neste local."}), 403
+            return fn(*args, **kwargs)
+        return wrapper
+    return deco
 
 
 def admin_required(fn):
@@ -739,6 +760,7 @@ def cockpit_page():
 
 @app.route('/api/cockpit/notices')
 @login_required
+@feature_required('portariaNotices')
 def api_cockpit_notices():
     """Avisos dos moradores (de hoje em diante) que vieram do ZAccess."""
     return jsonify({"notices": notices_store.list_upcoming()})
@@ -746,6 +768,7 @@ def api_cockpit_notices():
 
 @app.route('/api/cockpit/notices/<notice_id>/ack', methods=['POST'])
 @login_required
+@feature_required('portariaNotices')
 def api_cockpit_notice_ack(notice_id):
     """Porteiro marca "Ciente": vai para o ZAccess, que avisa o morador e devolve
     notice:updated (atualiza a lista)."""
@@ -759,18 +782,21 @@ def api_cockpit_notice_ack(notice_id):
 
 @app.route('/comunicados')
 @login_required
+@feature_required('portariaNotices', page=True)
 def comunicados_page():
     return render_template('comunicados.html')
 
 
 @app.route('/encomendas')
 @login_required
+@feature_required('parcels', page=True)
 def encomendas_page():
     return render_template('encomendas.html')
 
 
 @app.route('/reservas')
 @login_required
+@feature_required('reservations', page=True)
 def reservas_page():
     return render_template('reservas.html')
 
@@ -784,20 +810,21 @@ def api_portaria_pending():
     notices = [
         {"id": n["id"], "text": f"{n.get('typeLabel') or n.get('type')} · unidade {n.get('unit') or '-'}"}
         for n in notices_store.list_upcoming() if n.get("status") == "pending"
-    ]
+    ] if features_store.enabled("portariaNotices") else []
     parcels = [
         {"id": p["id"], "text": f"{p.get('carrierLabel') or p.get('carrier')} · unidade {p.get('unit')}"}
         for p in parcels_store.snapshot()["parcels"] if p.get("status") == "expected"
-    ]
+    ] if features_store.enabled("parcels") else []
     reservations = [
         {"id": r["id"], "text": f"{r.get('spaceName') or 'Espaço'} {r.get('startTime')}-{r.get('endTime')} · unidade {r.get('unit')}"}
         for r in reservations_store.list_today() if r.get("status") in ("pending", "confirmed")
-    ]
+    ] if features_store.enabled("reservations") else []
     return jsonify({"notices": notices, "parcels": parcels, "reservations": reservations})
 
 
 @app.route('/api/cockpit/reservations')
 @login_required
+@feature_required('reservations')
 def api_cockpit_reservations():
     """Reservas de espacos de hoje (vindas do ZAccess)."""
     return jsonify({"reservations": reservations_store.list_today()})
@@ -805,6 +832,7 @@ def api_cockpit_reservations():
 
 @app.route('/api/cockpit/parcels')
 @login_required
+@feature_required('parcels')
 def api_cockpit_parcels():
     """Encomendas aguardando retirada, unidades do local e empresas (vindas do ZAccess)."""
     return jsonify(parcels_store.snapshot())
@@ -827,6 +855,7 @@ def _text(body, key, max_len):
 
 @app.route('/api/cockpit/parcels', methods=['POST'])
 @login_required
+@feature_required('parcels')
 def api_cockpit_parcel_create():
     """Porteiro registra a encomenda; o ZAccess gera o código e avisa a unidade."""
     body = request.get_json(silent=True) or {}
@@ -839,6 +868,7 @@ def api_cockpit_parcel_create():
 
 @app.route('/api/cockpit/parcels/<parcel_id>/arrive', methods=['POST'])
 @login_required
+@feature_required('parcels')
 def api_cockpit_parcel_arrive(parcel_id):
     """Encomenda que o morador avisou chegou: o ZAccess avisa a unidade."""
     if not re.fullmatch(r"[0-9a-f]{24}", parcel_id or ""):
@@ -848,6 +878,7 @@ def api_cockpit_parcel_arrive(parcel_id):
 
 @app.route('/api/cockpit/parcels/<parcel_id>/deliver', methods=['POST'])
 @login_required
+@feature_required('parcels')
 def api_cockpit_parcel_deliver(parcel_id):
     """Entrega com o código de retirada que o morador mostra no app."""
     if not re.fullmatch(r"[0-9a-f]{24}", parcel_id or ""):

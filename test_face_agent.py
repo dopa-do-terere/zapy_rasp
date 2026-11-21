@@ -20,6 +20,7 @@ from simple_websocket import ConnectionClosed
 import face_terminals_store
 import notices_store
 import parcels_store
+import reservations_store
 import zaccess_client
 from local_event_pollers import sync_local_event_pollers
 import vehicle_antennas_store
@@ -2408,6 +2409,7 @@ class CockpitLayoutTest(unittest.TestCase):
         self.assertIn("live-player.js", html)
         self.assertIn('id="noticesList"', html)
         self.assertIn('id="parcelsList"', html)
+        self.assertIn('id="reservationsList"', html)
         self.assertIn('id="eventsList"', html)
 
     def test_terminal_without_rtsp_sends_reason_to_mosaic(self):
@@ -2634,6 +2636,46 @@ class ParcelsTest(unittest.TestCase):
             self.assertEqual(r.get_json()["message"], "Codigo incorreto.")
             call.return_value = None
             self.assertEqual(client.post(url, json={"code": "123456", "pickedUpBy": "Ana"}).status_code, 503)
+
+
+class ReservationsStoreTest(unittest.TestCase):
+    def setUp(self):
+        fd, self.path = tempfile.mkstemp(suffix=".json")
+        os.close(fd)
+        os.remove(self.path)
+        self.p = patch.object(reservations_store, "_PATH", self.path)
+        self.p.start()
+
+    def tearDown(self):
+        self.p.stop()
+        for f in (self.path, self.path + ".tmp"):
+            if os.path.exists(f):
+                os.remove(f)
+
+    def test_today_only_and_cancelled_leaves(self):
+        today = reservations_store._today()
+        reservations_store.replace_all([
+            {"id": "a" * 24, "date": today, "startTime": "18:00", "status": "confirmed"},
+            {"id": "b" * 24, "date": today, "startTime": "10:00", "status": "pending"},
+            {"id": "c" * 24, "date": "2000-01-01", "startTime": "10:00", "status": "confirmed"},
+            {"bad": 1},
+        ])
+        self.assertEqual([r["id"][0] for r in reservations_store.list_today()], ["b", "a"])
+        reservations_store.upsert({"id": "a" * 24, "date": today, "startTime": "18:00", "status": "cancelled"})
+        self.assertEqual([r["id"][0] for r in reservations_store.list_today()], ["b"])
+
+    def test_cockpit_route(self):
+        os.environ.setdefault("GPIOZERO_PIN_FACTORY", "mock")
+        with patch("face_agent.LocalStore", MagicMock()):
+            import app as app_module
+        client = app_module.app.test_client()
+        with client.session_transaction() as sess:
+            sess["logged_in"] = True
+            sess["role"] = "porteiro"
+            sess["username"] = "joao"
+        r = client.get("/api/cockpit/reservations")
+        self.assertEqual(r.status_code, 200)
+        self.assertIn("reservations", r.get_json())
 
 
 class SystemUpdateRouteTest(unittest.TestCase):

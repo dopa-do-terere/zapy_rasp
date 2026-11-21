@@ -16,6 +16,7 @@ import socketio
 import face_terminals_store
 import notices_store
 import parcels_store
+import reservations_store
 import vehicle_antennas_store
 from face_agent import (
     EventsPoller,
@@ -370,6 +371,15 @@ def run_zaccess_client(
             return r if isinstance(r, dict) else None
 
         _bridge["parcel_call"] = _parcel_call
+
+        # ---- Reservas de espacos (Cockpit, so leitura) ----
+        @sio.on("reservations:sync", namespace=NAMESPACE)
+        def reservations_sync(data):
+            reservations_store.replace_all((data or {}).get("reservations") or [])
+
+        @sio.on("reservation:updated", namespace=NAMESPACE)
+        def reservation_updated(data):
+            reservations_store.upsert(data)
         _bridge["connected"] = lambda: bool(sio.connected)
 
         @sio.on("device:config", namespace=NAMESPACE)

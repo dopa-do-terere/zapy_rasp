@@ -24,6 +24,7 @@ from config_env import read_config, get_config_for_display, write_config
 import face_terminals_store
 import notices_store
 import parcels_store
+import reservations_store
 import zaccess_client
 import vehicle_antennas_store
 import users_store
@@ -754,6 +755,13 @@ def api_cockpit_notice_ack(notice_id):
     if not ack or not ack(notice_id, session.get("username") or "Portaria"):
         return jsonify({"success": False, "message": "sem conexão com o ZAccess; tente de novo"}), 503
     return jsonify({"success": True})
+
+
+@app.route('/api/cockpit/reservations')
+@login_required
+def api_cockpit_reservations():
+    """Reservas de espacos de hoje (vindas do ZAccess)."""
+    return jsonify({"reservations": reservations_store.list_today()})
 
 
 @app.route('/api/cockpit/parcels')

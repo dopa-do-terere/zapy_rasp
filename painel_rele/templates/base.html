@@ -30,6 +30,9 @@
                 {% endif %}
                 <a class="nav-item{{ ' active' if path == '/cockpit' }}" href="/cockpit">{{ icons.door_open() }}<span class="nav-label">Cockpit</span></a>
                 <a class="nav-item{{ ' active' if path == '/eventos' }}" href="/eventos">{{ icons.alert_triangle() }}<span class="nav-label">Eventos</span></a>
+                <a class="nav-item{{ ' active' if path == '/comunicados' }}" href="/comunicados">{{ icons.megaphone() }}<span class="nav-label">Comunicados</span><span class="nav-badge" id="badgeNotices" hidden></span></a>
+                <a class="nav-item{{ ' active' if path == '/encomendas' }}" href="/encomendas">{{ icons.package() }}<span class="nav-label">Encomendas</span><span class="nav-badge" id="badgeParcels" hidden></span></a>
+                <a class="nav-item{{ ' active' if path == '/reservas' }}" href="/reservas">{{ icons.calendar() }}<span class="nav-label">Reservas</span><span class="nav-badge info" id="badgeReservations" hidden></span></a>
                 {% if session.role == 'admin' %}
                 <a class="nav-item{{ ' active' if path == '/face-terminals' }}" href="/face-terminals">{{ icons.scan_face() }}<span class="nav-label">Terminais faciais</span></a>
                 <a class="nav-item{{ ' active' if path == '/vehicle-antennas' }}" href="/vehicle-antennas">{{ icons.car() }}<span class="nav-label">Antenas veiculares</span></a>
@@ -58,6 +61,75 @@
         </div>
     </div>
 
+<div class="portaria-toasts" id="portariaToasts"></div>
+<script>
+// Contadores no menu e aviso (som + notificacao do navegador) quando chega comunicado,
+// encomenda avisada pelo morador ou reserva do dia que o porteiro ainda nao viu.
+(function() {
+    var SEEN_KEY = 'zapy-portaria-seen';
+    var LABEL = {
+        notices: ['Novo comunicado de morador', '/comunicados'],
+        parcels: ['Encomenda avisada pelo morador', '/encomendas'],
+        reservations: ['Reserva de hoje', '/reservas'],
+    };
+    function readSeen() { try { return JSON.parse(localStorage.getItem(SEEN_KEY)) || null; } catch (e) { return null; } }
+    function writeSeen(v) { try { localStorage.setItem(SEEN_KEY, JSON.stringify(v)); } catch (e) { /* storage bloqueado */ } }
+    function badge(id, n) {
+        var el = document.getElementById(id);
+        if (!el) return;
+        el.textContent = n > 99 ? '99+' : String(n);
+        el.hidden = !n;
+    }
+    function beep() {
+        try {
+            var ctx = new (window.AudioContext || window.webkitAudioContext)();
+            var o = ctx.createOscillator(); var g = ctx.createGain();
+            o.frequency.value = 880; g.gain.value = 0.15;
+            o.connect(g); g.connect(ctx.destination); o.start(); o.stop(ctx.currentTime + 0.25);
+        } catch (e) { /* sem audio */ }
+    }
+    function toast(kind, item) {
+        var box = document.getElementById('portariaToasts');
+        var a = document.createElement('a');
+        a.className = 'portaria-toast'; a.href = LABEL[kind][1];
+        var b = document.createElement('b'); b.textContent = LABEL[kind][0];
+        var t = document.createElement('span'); t.textContent = item.text || '';
+        a.appendChild(b); a.appendChild(t); box.appendChild(a);
+        setTimeout(function() { a.remove(); }, 12000);
+        try {
+            if (window.Notification && Notification.permission === 'granted' && document.hidden) {
+                new Notification(LABEL[kind][0], { body: item.text || '' });
+            }
+        } catch (e) { /* sem notificacao */ }
+    }
+    function poll() {
+        fetch('/api/portaria/pending').then(function(r) { return r.ok ? r.json() : null; }).then(function(j) {
+            if (!j) return;
+            badge('badgeNotices', j.notices.length);
+            badge('badgeParcels', j.parcels.length);
+            badge('badgeReservations', j.reservations.length);
+            var seen = readSeen();
+            var next = { notices: [], parcels: [], reservations: [] };
+            var fresh = 0;
+            Object.keys(next).forEach(function(kind) {
+                j[kind].forEach(function(item) {
+                    next[kind].push(item.id);
+                    // Primeira visita: so guarda o que ja existe, sem tocar.
+                    if (seen && (seen[kind] || []).indexOf(item.id) < 0) { toast(kind, item); fresh++; }
+                });
+            });
+            if (fresh) beep();
+            writeSeen(next);
+        }).catch(function() {});
+    }
+    document.addEventListener('click', function ask() {
+        document.removeEventListener('click', ask);
+        try { if (window.Notification && Notification.permission === 'default') Notification.requestPermission(); } catch (e) { /* ignorar */ }
+    });
+    poll();
+    setInterval(poll, 15000);
+})();
+</script>
 {% block extra_body %}{% endblock %}
 </body>
 </html>

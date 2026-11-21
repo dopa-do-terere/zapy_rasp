@@ -2407,9 +2407,7 @@ class CockpitLayoutTest(unittest.TestCase):
         self.assertIn('"name": "Garagem"', html)
         self.assertNotIn('"pw"', html)
         self.assertIn("live-player.js", html)
-        self.assertIn('id="noticesList"', html)
-        self.assertIn('id="parcelsList"', html)
-        self.assertIn('id="reservationsList"', html)
+        self.assertNotIn('id="noticesList"', html)  # foi para /comunicados
         self.assertIn('id="eventsList"', html)
 
     def test_terminal_without_rtsp_sends_reason_to_mosaic(self):
@@ -2676,6 +2674,49 @@ class ReservationsStoreTest(unittest.TestCase):
         r = client.get("/api/cockpit/reservations")
         self.assertEqual(r.status_code, 200)
         self.assertIn("reservations", r.get_json())
+
+
+class PortariaPagesTest(unittest.TestCase):
+    """Comunicados, encomendas e reservas em telas proprias, com contadores no menu."""
+
+    def setUp(self):
+        os.environ.setdefault("GPIOZERO_PIN_FACTORY", "mock")
+        with patch("face_agent.LocalStore", MagicMock()):
+            import app as app_module
+        self.client = app_module.app.test_client()
+        with self.client.session_transaction() as sess:
+            sess["logged_in"] = True
+            sess["role"] = "porteiro"
+            sess["username"] = "joao"
+
+    def test_pages_and_menu(self):
+        for path, marker in (("/comunicados", 'id="noticesList"'), ("/encomendas", 'id="parcelsList"'), ("/reservas", 'id="reservationsList"')):
+            html = self.client.get(path).get_data(as_text=True)
+            self.assertIn(marker, html, path)
+            self.assertIn('id="badgeNotices"', html)
+            self.assertIn('href="/encomendas"', html)
+
+    def test_pending_lists_only_what_needs_attention(self):
+        today = notices_store._today()
+        with patch.object(notices_store, "list_upcoming", return_value=[
+            {"id": "a" * 24, "date": today, "status": "pending", "typeLabel": "Limpeza", "unit": "101"},
+            {"id": "b" * 24, "date": today, "status": "acknowledged"},
+        ]), patch.object(parcels_store, "snapshot", return_value={"parcels": [
+            {"id": "c" * 24, "unit": "102", "status": "expected", "carrierLabel": "Shopee"},
+            {"id": "d" * 24, "unit": "103", "status": "waiting"},
+        ], "units": [], "carriers": []}), patch.object(reservations_store, "list_today", return_value=[
+            {"id": "e" * 24, "status": "confirmed", "spaceName": "Salao", "startTime": "18:00", "endTime": "22:00", "unit": "104"},
+            {"id": "f" * 24, "status": "finished"},
+        ]):
+            j = self.client.get("/api/portaria/pending").get_json()
+        self.assertEqual([x["id"][0] for x in j["notices"]], ["a"])
+        self.assertEqual([x["id"][0] for x in j["parcels"]], ["c"])
+        self.assertEqual([x["id"][0] for x in j["reservations"]], ["e"])
+        self.assertIn("Shopee", j["parcels"][0]["text"])
+
+    def test_pending_requires_login(self):
+        anon = self.client.application.test_client()
+        self.assertEqual(anon.get("/api/portaria/pending").status_code, 302)
 
 
 class SystemUpdateRouteTest(unittest.TestCase):

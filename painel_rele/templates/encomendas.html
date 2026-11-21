@@ -1,0 +1,140 @@
+{% extends "base.html" %}
+{% block title_suffix %} – Encomendas{% endblock %}
+{% block page_title %}Encomendas{% endblock %}
+{% block page_subtitle %}Registre a encomenda e a unidade recebe o código no app. Só entregue com o código de 6 dígitos.{% endblock %}
+
+{% block content %}
+<div class="portaria-page">
+        <div class="panel">
+            <div class="panel-header">
+                <span class="panel-title panel-title-row">{{ icons.package() }}Encomendas</span>
+                <span class="panel-sub" id="parcelsCount"></span>
+            </div>
+            <form id="parcelForm" class="parcel-form" autocomplete="off">
+                <input name="unit" list="parcelUnits" placeholder="Unidade" maxlength="50" required>
+                <datalist id="parcelUnits"></datalist>
+                <select name="carrier" id="parcelCarrier" required><option value="">Empresa…</option></select>
+                <input name="carrierName" id="parcelCarrierName" placeholder="Nome da empresa" maxlength="60" style="display:none;">
+                <input name="recipientName" placeholder="Destinatário" maxlength="120">
+                <input name="note" placeholder="Observação" maxlength="300">
+                <button type="submit" class="btn-ack">Registrar</button>
+            </form>
+            <div class="notice-err" id="parcelFormMsg"></div>
+            <div>
+                <div id="parcelsList" class="notices-list"></div>
+                <p class="empty-hint" id="parcelsEmpty" style="display:none;">Nenhuma encomenda aguardando retirada.</p>
+            </div>
+        </div>
+</div>
+{% endblock %}
+
+{% block extra_body %}
+<script>
+(function() {
+    function escapeHtml(s) {
+        return String(s == null ? '' : s).replace(/[&<>"']/g, function(c) {
+            return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+        });
+    }
+
+    // --- encomendas (o codigo de retirada so o morador ve no app) ---
+    var parcelsList = document.getElementById('parcelsList');
+    var parcelForm = document.getElementById('parcelForm');
+    var parcelCarrier = document.getElementById('parcelCarrier');
+    var parcelCarrierName = document.getElementById('parcelCarrierName');
+    var parcelFormMsg = document.getElementById('parcelFormMsg');
+    var carriersLoaded = false;
+    function parcelDays(p) { return p.receivedAt ? Math.floor((Date.now() - new Date(p.receivedAt).getTime()) / 864e5) : 0; }
+    function renderParcels(j) {
+        var list = j.parcels || [];
+        if (!carriersLoaded && (j.carriers || []).length) {
+            carriersLoaded = true;
+            parcelCarrier.innerHTML = '<option value="">Empresa…</option>' + j.carriers.map(function(c) {
+                return '<option value="' + escapeHtml(c.value) + '">' + escapeHtml(c.label) + '</option>';
+            }).join('');
+        }
+        document.getElementById('parcelUnits').innerHTML = (j.units || []).map(function(u) {
+            return '<option value="' + escapeHtml(u) + '"></option>';
+        }).join('');
+        document.getElementById('parcelsEmpty').style.display = list.length ? 'none' : '';
+        var expected = list.filter(function(p) { return p.status === 'expected'; }).length;
+        var waiting = list.length - expected;
+        document.getElementById('parcelsCount').textContent = [waiting ? waiting + ' na portaria' : '', expected ? expected + ' esperada(s)' : ''].filter(Boolean).join(' · ');
+        parcelsList.innerHTML = list.map(function(p) {
+            var days = parcelDays(p);
+            var isExpected = p.status === 'expected';
+            var meta = 'Unidade ' + escapeHtml(p.unit) + (p.recipientName ? ' · para ' + escapeHtml(p.recipientName) : '') +
+                (isExpected ? ' · esperada' + (p.expectedBy ? ' (aviso de ' + escapeHtml(p.expectedBy) + ')' : '') : ' · ' + (days ? 'há ' + days + ' dia(s)' : 'hoje'));
+            var auth = p.authorizedName ? '<div class="notice-meta">Autorizado a retirar: <b>' + escapeHtml(p.authorizedName) + '</b>' +
+                (p.authorizedDoc ? ' (' + escapeHtml(p.authorizedDoc) + ')' : '') + '</div>' : '';
+            var deliver = isExpected
+                ? '<div class="parcel-deliver"><button type="button" class="btn-ack" data-arrive="' + escapeHtml(p.id) + '">Chegou</button><div class="notice-err"></div></div>'
+                : p.codeLocked
+                ? '<div class="notice-err">Código bloqueado após 5 tentativas: entregue pelo painel.</div>'
+                : '<form class="parcel-deliver" data-deliver="' + escapeHtml(p.id) + '">' +
+                  '<input name="code" inputmode="numeric" maxlength="6" placeholder="Código" required>' +
+                  '<input name="pickedUpBy" maxlength="120" placeholder="Quem retirou" value="' + escapeHtml(p.authorizedName || '') + '" required>' +
+                  '<button type="submit" class="btn-ack">Entregar</button><div class="notice-err"></div></form>';
+            return '<div class="notice-item' + (isExpected ? '' : days >= 3 ? ' old' : ' pending') + '" style="justify-content:flex-start">' +
+                '<span class="parcel-badge" style="background:' + escapeHtml(p.carrierColor || '#6B7280') + ';color:' + escapeHtml(p.carrierFg || '#fff') + '">' + escapeHtml(p.carrierShort || '?') + '</span>' +
+                '<div class="notice-main" style="flex:1">' +
+                '<div class="notice-title">' + escapeHtml(p.carrierLabel || p.carrier) + '</div>' +
+                '<div class="notice-meta">' + meta + '</div>' + auth +
+                (p.note ? '<div class="notice-msg">' + escapeHtml(p.note) + '</div>' : '') + deliver +
+                '</div></div>';
+        }).join('');
+    }
+    function loadParcels() {
+        fetch('/api/cockpit/parcels').then(function(r) { return r.json(); }).then(renderParcels).catch(function() {});
+    }
+    function postJson(url, body) {
+        return fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+            .then(function(r) { return r.json(); });
+    }
+    parcelCarrier.addEventListener('change', function() {
+        parcelCarrierName.style.display = parcelCarrier.value === 'outro' ? '' : 'none';
+    });
+    parcelForm.addEventListener('submit', function(e) {
+        e.preventDefault();
+        var btn = parcelForm.querySelector('button');
+        var body = {};
+        new FormData(parcelForm).forEach(function(v, k) { body[k] = v; });
+        btn.disabled = true; parcelFormMsg.textContent = '';
+        postJson('/api/cockpit/parcels', body).then(function(j) {
+            btn.disabled = false;
+            if (j.success) { parcelForm.reset(); parcelCarrierName.style.display = 'none'; loadParcels(); }
+            else { parcelFormMsg.textContent = j.message || 'Falha.'; }
+        }).catch(function() { btn.disabled = false; parcelFormMsg.textContent = 'Falha.'; });
+    });
+    parcelsList.addEventListener('click', function(e) {
+        var btn = e.target.closest('[data-arrive]');
+        if (!btn || btn.disabled) return;
+        var msg = btn.parentNode.querySelector('.notice-err');
+        btn.disabled = true; msg.textContent = '';
+        postJson('/api/cockpit/parcels/' + encodeURIComponent(btn.getAttribute('data-arrive')) + '/arrive', {}).then(function(j) {
+            if (j.success) { loadParcels(); }
+            else { msg.textContent = j.message || 'Falha.'; btn.disabled = false; }
+        }).catch(function() { msg.textContent = 'Falha.'; btn.disabled = false; });
+    });
+    parcelsList.addEventListener('submit', function(e) {
+        var form = e.target.closest('[data-deliver]');
+        if (!form) return;
+        e.preventDefault();
+        var btn = form.querySelector('button');
+        var msg = form.querySelector('.notice-err');
+        btn.disabled = true; msg.textContent = '';
+        postJson('/api/cockpit/parcels/' + encodeURIComponent(form.getAttribute('data-deliver')) + '/deliver', {
+            code: form.elements.code.value.trim(), pickedUpBy: form.elements.pickedUpBy.value,
+        }).then(function(j) {
+            if (j.success) { loadParcels(); }
+            else { msg.textContent = j.message || 'Falha.'; btn.disabled = false; }
+        }).catch(function() { msg.textContent = 'Falha.'; btn.disabled = false; });
+    });
+    loadParcels();
+    setInterval(function() {
+        // nao recarrega enquanto o porteiro digita um codigo
+        if (!parcelsList.contains(document.activeElement)) loadParcels();
+    }, 15000);
+})();
+</script>
+{% endblock %}

@@ -279,3 +279,41 @@ body {
 .auth-form-card { width: 100%; max-width: 340px; }
 .auth-form-card h1 { font-family: var(--font-display); font-size: 22px; font-weight: 700; margin: 0 0 20px; color: var(--foreground); }
 .auth-form-card .hint { margin-top: 16px; font-size: 0.75rem; color: var(--muted-foreground); text-align: center; }
+
+
+/* === Portaria: comunicados, encomendas e reservas (telas proprias) === */
+.portaria-page { max-width: 880px; }
+/* --- comunicados dos moradores --- */
+.notices-list { display: flex; flex-direction: column; gap: 8px; }
+.notice-item { border: 1px solid var(--border); border-radius: var(--radius-md); padding: 10px 12px; display: flex; gap: 10px; align-items: flex-start; justify-content: space-between; }
+.notice-item.pending { border-color: var(--primary); }
+.notice-main { min-width: 0; }
+.notice-title { font-weight: 700; font-size: 0.82rem; }
+.notice-meta { font-size: 0.7rem; color: var(--muted-foreground); margin-top: 2px; }
+.notice-msg { margin-top: 5px; font-size: 0.8rem; white-space: pre-wrap; word-break: break-word; }
+.notice-side { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; flex-shrink: 0; }
+.btn-ack {
+    border: none; border-radius: var(--radius-md); padding: 7px 12px; font: 700 0.75rem var(--font-sans);
+    background: var(--primary); color: #fff; cursor: pointer;
+}
+.btn-ack:disabled { opacity: 0.7; cursor: default; }
+.notice-err { font-size: 0.68rem; color: var(--destructive); }
+
+/* --- encomendas --- */
+.parcel-badge { width: 34px; height: 34px; border-radius: var(--radius-md); display: inline-flex; align-items: center; justify-content: center; font-weight: 800; font-size: 0.75rem; flex-shrink: 0; }
+.notice-item.old { border-color: var(--destructive); }
+.parcel-form { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 6px; margin-bottom: 10px; }
+.parcel-form input, .parcel-form select, .parcel-deliver input {
+    width: 100%; padding: 7px 9px; border-radius: var(--radius-md); border: 1px solid var(--border);
+    background: transparent; color: inherit; font: 0.78rem var(--font-sans);
+}
+.parcel-deliver { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.parcel-deliver input { width: auto; flex: 1 1 90px; }
+
+/* --- contadores no menu e aviso de novidade --- */
+.nav-badge { margin-left: auto; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 999px; background: var(--destructive); color: #fff; font: 700 0.65rem/18px var(--font-sans); text-align: center; }
+.nav-badge.info { background: var(--primary); }
+.nav-badge[hidden] { display: none; }
+.portaria-toasts { position: fixed; right: 16px; bottom: 16px; z-index: 1000; display: flex; flex-direction: column; gap: 8px; max-width: 320px; }
+.portaria-toast { display: block; padding: 12px 14px; border-radius: var(--radius-md); background: var(--card); border: 1px solid var(--primary); border-left-width: 4px; box-shadow: 0 8px 24px rgba(0,0,0,0.18); color: inherit; text-decoration: none; font-size: 0.85rem; }
+.portaria-toast b { display: block; margin-bottom: 2px; }

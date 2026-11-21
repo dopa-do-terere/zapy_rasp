@@ -1,0 +1,74 @@
+{% extends "base.html" %}
+{% block title_suffix %} – Comunicados{% endblock %}
+{% block page_title %}Comunicados{% endblock %}
+{% block page_subtitle %}Avisos dos moradores: quem vem hoje e nos próximos dias. Marque "Ciente" e o morador é avisado no app.{% endblock %}
+
+{% block content %}
+<div class="portaria-page">
+        <div class="panel">
+            <div class="panel-header">
+                <span class="panel-title panel-title-row">{{ icons.megaphone() }}Comunicados dos moradores</span>
+                <span class="panel-sub" id="noticesCount"></span>
+            </div>
+            <div>
+                <div id="noticesList" class="notices-list"></div>
+                <p class="empty-hint" id="noticesEmpty" style="display:none;">Nenhum comunicado de hoje em diante.</p>
+            </div>
+        </div>
+</div>
+{% endblock %}
+
+{% block extra_body %}
+<script>
+(function() {
+    function escapeHtml(s) {
+        return String(s == null ? '' : s).replace(/[&<>"']/g, function(c) {
+            return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+        });
+    }
+
+    // --- comunicados dos moradores ---
+    var noticesList = document.getElementById('noticesList');
+    function noticeWhen(n) {
+        var today = new Date(Date.now() - 3 * 3600e3).toISOString().slice(0, 10);
+        var parts = n.date.split('-');
+        return (n.date === today ? 'Hoje' : parts[2] + '/' + parts[1]) + (n.time ? ' às ' + n.time : '');
+    }
+    function renderNotices(list) {
+        document.getElementById('noticesEmpty').style.display = list.length ? 'none' : '';
+        var pending = list.filter(function(n) { return n.status === 'pending'; }).length;
+        document.getElementById('noticesCount').textContent = pending ? pending + ' pendente(s)' : '';
+        noticesList.innerHTML = list.map(function(n) {
+            var who = escapeHtml(n.authorName || 'Morador') + (n.unit ? ' · unidade ' + escapeHtml(n.unit) : '');
+            var side = n.status === 'pending'
+                ? '<button type="button" class="btn-ack" data-ack="' + escapeHtml(n.id) + '">Ciente</button><div class="notice-err"></div>'
+                : '<span class="badge success">Ciente</span>';
+            return '<div class="notice-item' + (n.status === 'pending' ? ' pending' : '') + '">' +
+                '<div class="notice-main"><div class="notice-title">' + escapeHtml(n.typeLabel || n.type) + ' — ' + escapeHtml(noticeWhen(n)) + '</div>' +
+                '<div class="notice-meta">' + who + '</div>' +
+                (n.message ? '<div class="notice-msg">' + escapeHtml(n.message) + '</div>' : '') +
+                '</div><div class="notice-side">' + side + '</div></div>';
+        }).join('');
+    }
+    function loadNotices() {
+        fetch('/api/cockpit/notices').then(function(r) { return r.json(); })
+            .then(function(j) { renderNotices(j.notices || []); }).catch(function() {});
+    }
+    noticesList.addEventListener('click', function(e) {
+        var btn = e.target.closest('[data-ack]');
+        if (!btn || btn.disabled) return;
+        btn.disabled = true;
+        var err = btn.parentNode.querySelector('.notice-err');
+        fetch('/api/cockpit/notices/' + encodeURIComponent(btn.getAttribute('data-ack')) + '/ack', { method: 'POST' })
+            .then(function(r) { return r.json(); })
+            .then(function(j) {
+                if (j.success) setTimeout(loadNotices, 1500);
+                else { err.textContent = j.message || 'Falha.'; btn.disabled = false; }
+            })
+            .catch(function() { err.textContent = 'Falha.'; btn.disabled = false; });
+    });
+    loadNotices();
+    setInterval(loadNotices, 15000);
+})();
+</script>
+{% endblock %}

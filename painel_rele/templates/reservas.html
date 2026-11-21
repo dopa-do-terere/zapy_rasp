@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% block title_suffix %} – Reservas{% endblock %}
+{% block page_title %}Reservas{% endblock %}
+{% block page_subtitle %}Reservas dos espaços de hoje (salão de festa e outros). Só leitura.{% endblock %}
+
+{% block content %}
+<div class="portaria-page">
+        <div class="panel">
+            <div class="panel-header">
+                <span class="panel-title panel-title-row">{{ icons.calendar() }}Reservas de hoje</span>
+                <span class="panel-sub" id="reservationsCount"></span>
+            </div>
+            <div>
+                <div id="reservationsList" class="notices-list"></div>
+                <p class="empty-hint" id="reservationsEmpty" style="display:none;">Nenhuma reserva hoje.</p>
+            </div>
+        </div>
+</div>
+{% endblock %}
+
+{% block extra_body %}
+<script>
+(function() {
+    function escapeHtml(s) {
+        return String(s == null ? '' : s).replace(/[&<>"']/g, function(c) {
+            return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+        });
+    }
+
+    // --- reservas de hoje (so leitura) ---
+    var RES_LABEL = { pending: 'Pendente', confirmed: 'Confirmada', finished: 'Encerrada' };
+    function renderReservations(list) {
+        document.getElementById('reservationsEmpty').style.display = list.length ? 'none' : '';
+        document.getElementById('reservationsCount').textContent = list.length ? list.length + ' hoje' : '';
+        document.getElementById('reservationsList').innerHTML = list.map(function(r) {
+            return '<div class="notice-item' + (r.status === 'confirmed' ? ' pending' : '') + '">' +
+                '<div class="notice-main"><div class="notice-title">' + escapeHtml(r.spaceName || 'Espaço') + ' — ' + escapeHtml(r.startTime) + ' às ' + escapeHtml(r.endTime) + '</div>' +
+                '<div class="notice-meta">Unidade ' + escapeHtml(r.unit || '') + (r.holderName ? ' · ' + escapeHtml(r.holderName) : '') + '</div></div>' +
+                '<div class="notice-side"><span class="badge">' + escapeHtml(RES_LABEL[r.status] || r.status) + '</span></div></div>';
+        }).join('');
+    }
+    function loadReservations() {
+        fetch('/api/cockpit/reservations').then(function(r) { return r.json(); })
+            .then(function(j) { renderReservations(j.reservations || []); }).catch(function() {});
+    }
+    loadReservations();
+    setInterval(loadReservations, 30000);
+})();
+</script>
+{% endblock %}

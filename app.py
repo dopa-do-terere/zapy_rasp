@@ -757,6 +757,45 @@ def api_cockpit_notice_ack(notice_id):
     return jsonify({"success": True})
 
 
+@app.route('/comunicados')
+@login_required
+def comunicados_page():
+    return render_template('comunicados.html')
+
+
+@app.route('/encomendas')
+@login_required
+def encomendas_page():
+    return render_template('encomendas.html')
+
+
+@app.route('/reservas')
+@login_required
+def reservas_page():
+    return render_template('reservas.html')
+
+
+@app.route('/api/portaria/pending')
+@login_required
+def api_portaria_pending():
+    """O que o porteiro ainda precisa ver/responder: comunicados sem Ciente, encomendas
+    avisadas pelo morador (esperando Chegou) e reservas do dia. Alimenta os contadores do
+    menu e o aviso de novidade."""
+    notices = [
+        {"id": n["id"], "text": f"{n.get('typeLabel') or n.get('type')} · unidade {n.get('unit') or '-'}"}
+        for n in notices_store.list_upcoming() if n.get("status") == "pending"
+    ]
+    parcels = [
+        {"id": p["id"], "text": f"{p.get('carrierLabel') or p.get('carrier')} · unidade {p.get('unit')}"}
+        for p in parcels_store.snapshot()["parcels"] if p.get("status") == "expected"
+    ]
+    reservations = [
+        {"id": r["id"], "text": f"{r.get('spaceName') or 'Espaço'} {r.get('startTime')}-{r.get('endTime')} · unidade {r.get('unit')}"}
+        for r in reservations_store.list_today() if r.get("status") in ("pending", "confirmed")
+    ]
+    return jsonify({"notices": notices, "parcels": parcels, "reservations": reservations})
+
+
 @app.route('/api/cockpit/reservations')
 @login_required
 def api_cockpit_reservations():

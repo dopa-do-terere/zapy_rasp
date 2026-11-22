@@ -2910,6 +2910,24 @@ class HealthAndConfigPagesTest(unittest.TestCase):
         self.assertEqual(len(j["sensors"]), 8)
         self.assertIn('id="zaccess"', self.client.get("/health").get_data(as_text=True))
 
+    def test_physical_pins_follow_pi_header(self):
+        # Mapa conferido com a pinagem oficial do Raspberry Pi (40 pinos).
+        self.assertEqual({r: self.m.BCM_TO_PHYSICAL[b] for r, b in self.m.RELAY_PINS.items()},
+                         {"1": 29, "2": 31, "3": 33, "4": 35})
+        self.assertEqual(self.m.SENSOR_PINS_PHYSICAL,
+                         {"1": 11, "2": 13, "3": 15, "4": 16, "5": 18, "6": 22, "7": 37, "8": 7})
+        self.assertEqual(len(self.m.PI_HEADER), 40)
+        self.assertEqual(len(self.m.BCM_TO_PHYSICAL), 28)
+
+    def test_wiring_page_lists_every_relay_sensor_and_button(self):
+        self.m.local_store.get_terminal_name.return_value = None
+        html = self.client.get("/ligacoes").get_data(as_text=True)
+        for key in ("R1", "R2", "R3", "R4", "S1", "S2", "S3", "S4", "B5", "B6", "B7", "B8"):
+            self.assertIn(">" + key + "<", html)
+        self.assertIn('href="/ligacoes"', html)
+        self.assertIn("IN1 no pino 29", html)
+        self.assertIn("6, 9, 14, 20, 25, 30, 34, 39", html)
+
     def test_config_page_has_tabs_and_relay_table(self):
         html = self.client.get("/config").get_data(as_text=True)
         for tab in ("conexao", "portas", "video", "sistema"):

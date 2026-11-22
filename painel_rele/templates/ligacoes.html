@@ -1,0 +1,143 @@
+{% extends "base.html" %}
+{% block title_suffix %} – Ligações{% endblock %}
+
+{% block page_title %}Mapa de ligações{% endblock %}
+{% block page_subtitle %}Pinos do Raspberry Pi usados por este zapy, gerados da configuração em uso. O estado ao vivo ajuda a testar cada fio.{% endblock %}
+{% block page_actions %}<button type="button" class="btn-outline" onclick="window.print()">Imprimir</button>{% endblock %}
+
+{% block extra_head %}
+<style>
+    .wiring { display: flex; flex-direction: column; gap: 16px; max-width: 1100px; }
+    .wiring .panel { margin: 0; }
+    .wiring-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr); gap: 16px; align-items: start; }
+    @media (max-width: 900px) { .wiring-grid { grid-template-columns: 1fr; } }
+
+    .header-pi { display: grid; grid-template-columns: 1fr 28px 28px 1fr; gap: 3px 6px; align-items: center; font-size: 0.72rem; }
+    .header-pi .lbl { display: flex; align-items: center; gap: 6px; min-width: 0; color: var(--muted-foreground); }
+    .header-pi .lbl.l { justify-content: flex-end; text-align: right; }
+    .header-pi .lbl .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--foreground); font-weight: 600; }
+    .pin { width: 26px; height: 26px; border-radius: 999px; display: flex; align-items: center; justify-content: center;
+           font-size: 0.66rem; font-weight: 700; border: 2px solid #cbd5e1; background: #f1f5f9; color: #64748b; }
+    .pin.first { border-radius: 4px; }
+    .pin.p5V { background: #dc2626; border-color: #dc2626; color: #fff; }
+    .pin.p3V3 { background: #f59e0b; border-color: #f59e0b; color: #fff; }
+    .pin.pGND { background: #111827; border-color: #111827; color: #fff; }
+    .pin.rele, .tag.rele { background: #7c3aed; border-color: #7c3aed; color: #fff; }
+    .pin.sensor, .tag.sensor { background: #0284c7; border-color: #0284c7; color: #fff; }
+    .pin.botao, .tag.botao { background: #16a34a; border-color: #16a34a; color: #fff; }
+    .tag { display: inline-block; padding: 1px 6px; border-radius: 4px; font-weight: 700; font-size: 0.68rem; border: 1px solid transparent; }
+    .board-note { font-size: 0.72rem; color: var(--muted-foreground); margin: 0 0 10px; }
+    .legend { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 12px; font-size: 0.7rem; color: var(--muted-foreground); }
+    .legend span { display: inline-flex; align-items: center; gap: 4px; }
+    .legend i { width: 12px; height: 12px; border-radius: 999px; display: inline-block; }
+
+    .wtable { width: 100%; border-collapse: collapse; font-size: 0.8rem; }
+    .wtable th { text-align: left; font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.03em; color: var(--muted-foreground); padding: 6px 8px; border-bottom: 1px solid var(--border); }
+    .wtable td { padding: 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
+    .wtable .big { font-size: 1rem; font-weight: 800; }
+    .wtable .state { font-weight: 600; white-space: nowrap; }
+    .state.on { color: var(--success); }
+    .steps { margin: 0; padding-left: 18px; font-size: 0.8rem; line-height: 1.6; }
+    .steps b { white-space: nowrap; }
+
+    @media print {
+        .sidebar, .page-header-actions, .state, .col-state { display: none !important; }
+        .wiring-grid { grid-template-columns: 1fr 1.2fr; }
+        .pin, .tag, .legend i { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="wiring">
+    <div class="wiring-grid">
+        <section class="panel">
+            <div class="panel-header"><span class="panel-title">Barramento de 40 pinos</span></div>
+            <p class="board-note">Vista de cima, com o pino 1 (quadrado) no canto do lado do cartão SD. Os pinos ímpares ficam na fileira de dentro da placa e os pares na borda.</p>
+            <div class="header-pi">
+                {% for i in range(0, 40, 2) %}
+                {% set a = header[i] %}{% set b = header[i + 1] %}
+                <div class="lbl l">
+                    {% if a.use %}<span class="nm" title="{{ a.use.name }}">{{ a.use.name }}</span><span class="tag {{ a.use.kind }}">{{ a.use.key }}</span>{% endif %}
+                    <span>{{ a.label }}</span>
+                </div>
+                <div class="pin{{ ' first' if a.pin == 1 }} {{ a.use.kind if a.use else ('p' ~ a.power if a.power else '') }}" title="Pino {{ a.pin }} · {{ a.label }}">{{ a.pin }}</div>
+                <div class="pin {{ b.use.kind if b.use else ('p' ~ b.power if b.power else '') }}" title="Pino {{ b.pin }} · {{ b.label }}">{{ b.pin }}</div>
+                <div class="lbl">
+                    <span>{{ b.label }}</span>
+                    {% if b.use %}<span class="tag {{ b.use.kind }}">{{ b.use.key }}</span><span class="nm" title="{{ b.use.name }}">{{ b.use.name }}</span>{% endif %}
+                </div>
+                {% endfor %}
+            </div>
+            <div class="legend">
+                <span><i style="background:#7c3aed"></i>Relé</span>
+                <span><i style="background:#0284c7"></i>Sensor de porta</span>
+                <span><i style="background:#16a34a"></i>Botão</span>
+                <span><i style="background:#dc2626"></i>5V</span>
+                <span><i style="background:#f59e0b"></i>3V3</span>
+                <span><i style="background:#111827"></i>GND</span>
+                <span><i style="background:#f1f5f9;border:1px solid #cbd5e1"></i>Livre</span>
+            </div>
+        </section>
+
+        <section class="panel">
+            <div class="panel-header"><span class="panel-title">Tabela de ligações</span><span class="panel-sub" id="updatedAt"></span></div>
+            <table class="wtable">
+                <thead><tr><th></th><th>Nome</th><th>Pino físico</th><th>GPIO</th><th>Ligar em</th><th class="col-state">Agora</th></tr></thead>
+                <tbody>
+                {% for w in wiring %}
+                <tr>
+                    <td><span class="tag {{ w.kind }}">{{ w.key }}</span></td>
+                    <td>{{ w.name }}</td>
+                    <td class="big">{{ w.pin }}</td>
+                    <td>{{ w.bcm }}</td>
+                    <td>{{ w.to }}</td>
+                    <td class="state col-state" data-kind="{{ w.kind }}" data-id="{{ w.id }}">—</td>
+                </tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </section>
+    </div>
+
+    <section class="panel">
+        <div class="panel-header"><span class="panel-title">Como ligar</span></div>
+        <ol class="steps">
+            <li><b>Módulo de relés:</b> cada IN do módulo vai no pino da tabela (IN1 no pino {{ wiring[0].pin }}, IN2 no {{ wiring[1].pin }}, IN3 no {{ wiring[2].pin }}, IN4 no {{ wiring[3].pin }}). O zapy aciona em nível baixo, então use um módulo do tipo "acionado em LOW", que é o padrão dos módulos de 4 relés.</li>
+            <li><b>Alimentação do módulo:</b> GND do módulo em qualquer GND do Pi. No módulo comum de 5V, o VCC vai no 5V (pino 2 ou 4). Confira a tensão impressa no seu módulo.</li>
+            <li><b>Sensores de porta e botões:</b> um fio no pino da tabela e o outro em qualquer GND (pinos {{ gnd_pins | join(', ') }}). Não precisa de resistor, o pull-up interno já está ligado.</li>
+            <li><b>Teste:</b> com esta tela aberta, aproxime o ímã de cada sensor e aperte cada botão. A coluna "Agora" muda na hora se o fio estiver certo.</li>
+        </ol>
+    </section>
+</div>
+{% endblock %}
+
+{% block extra_body %}
+<script>
+(function () {
+    const cells = document.querySelectorAll('td.state');
+    async function refresh() {
+        try {
+            const r = await fetch('/api/health-local', { credentials: 'same-origin' });
+            if (!r.ok) return;
+            const j = await r.json();
+            cells.forEach(function (td) {
+                let txt;
+                if (td.dataset.kind === 'rele') {
+                    const on = j.relays && j.relays[td.dataset.id];
+                    txt = on ? 'Ligado' : 'Desligado';
+                    td.classList.toggle('on', !!on);
+                } else {
+                    txt = (j.sensors && j.sensors[td.dataset.id]) || '—';
+                    td.classList.toggle('on', txt === 'Fechado' || txt === 'Pressionado');
+                }
+                td.textContent = txt;
+            });
+            document.getElementById('updatedAt').textContent = 'ao vivo · ' + new Date().toLocaleTimeString('pt-BR');
+        } catch (e) { /* sem rede: mantém o último estado */ }
+    }
+    refresh();
+    setInterval(refresh, 2000);
+})();
+</script>
+{% endblock %}

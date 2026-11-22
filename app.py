@@ -130,10 +130,16 @@ SENSOR_PINS = {
     "1": 17, "2": 27, "3": 22, "4": 23,
     "5": 24, "6": 25, "7": 26, "8": 4,
 }
-SENSOR_PINS_PHYSICAL = {
-    "1": 11, "2": 13, "3": 15, "4": 16,
-    "5": 18, "6": 22, "7": 37, "8": 7,
-}
+# Barramento de 40 pinos do Raspberry Pi (pino físico 1..40). Número = GPIO BCM.
+# É a fonte única do pino físico: o mapa de ligações (/ligacoes) sai daqui e de RELAY_PINS/SENSOR_PINS.
+PI_HEADER = [
+    "3V3", "5V", 2, "5V", 3, "GND", 4, 14, "GND", 15,
+    17, 18, 27, "GND", 22, 23, "3V3", 24, 10, "GND",
+    9, 25, 11, 8, "GND", 7, 0, 1, 5, "GND",
+    6, 12, 13, "GND", 19, 16, 26, 20, "GND", 21,
+]
+BCM_TO_PHYSICAL = {bcm: i + 1 for i, bcm in enumerate(PI_HEADER) if isinstance(bcm, int)}
+SENSOR_PINS_PHYSICAL = {sid: BCM_TO_PHYSICAL[bcm] for sid, bcm in SENSOR_PINS.items()}
 
 
 class _MockSensor:
@@ -1131,6 +1137,33 @@ def logout():
 @admin_required
 def health_page():
     return render_template('health.html')
+
+
+def _wiring() -> list[dict]:
+    """Uma linha por ligação física, montada da configuração real de pinos (nada fixo no template)."""
+    rows = []
+    for rid, bcm in RELAY_PINS.items():
+        rows.append({"key": f"R{rid}", "kind": "rele", "id": rid, "bcm": bcm, "pin": BCM_TO_PHYSICAL[bcm],
+                     "name": local_store.get_terminal_name(f"door:{rid}") or f"Relé {rid}",
+                     "to": f"IN{rid} do módulo de relés"})
+    for sid, bcm in SENSOR_PINS.items():
+        button = sid in _BUTTON_SENSORS
+        rows.append({"key": f"B{sid}" if button else f"S{sid}", "kind": "botao" if button else "sensor", "id": sid,
+                     "bcm": bcm, "pin": BCM_TO_PHYSICAL[bcm],
+                     "name": local_store.get_terminal_name(f"sensor:{sid}") or (f"Botão {sid}" if button else f"Sensor de porta {sid}"),
+                     "to": "um fio do botão (o outro no GND)" if button else "um fio do reed switch (o outro no GND)"})
+    return rows
+
+
+@app.route('/ligacoes')
+@admin_required
+def wiring_page():
+    wiring = _wiring()
+    by_pin = {w["pin"]: w for w in wiring}
+    header = [{"pin": i + 1, "label": v if isinstance(v, str) else f"GPIO{v}", "use": by_pin.get(i + 1),
+               "power": v if isinstance(v, str) else None} for i, v in enumerate(PI_HEADER)]
+    gnd_pins = [h["pin"] for h in header if h["power"] == "GND"]
+    return render_template('ligacoes.html', wiring=wiring, header=header, gnd_pins=gnd_pins)
 
 
 def _read(path: str) -> str:

@@ -21,6 +21,7 @@ import requests
 from requests.auth import HTTPDigestAuth
 
 from .errors import FaceProvisioningError
+from .jpeg_fit import fit_jpeg
 
 logger = logging.getLogger(__name__)
 
@@ -120,6 +121,7 @@ class IntelbrasBioTClient:
     def enroll_face(self, employee_no: str, name: str, jpeg: bytes) -> str:
         """Cadastra (ou atualiza) usuário + face num terminal Bio-T. Retorna 'created' ou
         'updated'."""
+        jpeg = fit_jpeg(jpeg, MAX_JPEG_BYTES)
         _validate_jpeg(jpeg)
         status = self._ensure_user(employee_no, name)
 

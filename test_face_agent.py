@@ -2942,3 +2942,23 @@ class HealthAndConfigPagesTest(unittest.TestCase):
         for n in "1234":
             self.assertIn('id="PULSE_RELE_' + n + '"', html)
             self.assertIn('class="cockpit-relay" value="' + n + '"', html)
+
+
+class FitJpegTest(unittest.TestCase):
+    def test_shrinks_big_photo_to_bio_t_limit(self):
+        import io
+        from PIL import Image
+        from face_agent.jpeg_fit import fit_jpeg, MIN_SIDE
+        # foto "realista": gradiente com ruido moderado (ruido puro nao comprime em JPEG nenhum)
+        noise = Image.effect_noise((900, 1200), 40).convert("RGB")
+        grad = Image.linear_gradient("L").resize((900, 1200)).convert("RGB")
+        img = Image.blend(grad, noise, 0.5)
+        buf = io.BytesIO()
+        img.save(buf, "JPEG", quality=95)
+        big = buf.getvalue()
+        self.assertGreater(len(big), 100 * 1024)
+        out = fit_jpeg(big, 100 * 1024)
+        self.assertLessEqual(len(out), 100 * 1024)
+        self.assertEqual(out[:2], b"\xff\xd8")
+        self.assertGreaterEqual(min(Image.open(io.BytesIO(out)).size), MIN_SIDE)
+        self.assertIs(fit_jpeg(out, 100 * 1024), out)  # ja cabe: nao mexe

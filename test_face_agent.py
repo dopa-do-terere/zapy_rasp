@@ -2963,6 +2963,17 @@ class FitJpegTest(unittest.TestCase):
         self.assertGreaterEqual(min(Image.open(io.BytesIO(out)).size), MIN_SIDE)
         self.assertIs(fit_jpeg(out, 100 * 1024), out)  # ja cabe: nao mexe
 
+    def test_thumb_is_small_square_jpeg(self):
+        import io
+        from PIL import Image
+        from face_agent.jpeg_fit import make_thumb, THUMB_SIDE, THUMB_MAX_BYTES
+        buf = io.BytesIO()
+        Image.effect_noise((600, 800), 40).convert("RGB").save(buf, "JPEG", quality=90)
+        thumb = make_thumb(buf.getvalue())
+        self.assertLessEqual(len(thumb), THUMB_MAX_BYTES)
+        self.assertEqual(Image.open(io.BytesIO(thumb)).size, (THUMB_SIDE, THUMB_SIDE))
+        self.assertIsNone(make_thumb(b"lixo"))
+
 
 class IntelbrasDigestFallbackTest(unittest.TestCase):
     def test_switches_to_digest_when_xpe_asks(self):

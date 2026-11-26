@@ -30,6 +30,7 @@ from face_agent import (
     validity_state,
 )
 from face_agent.controlid_client import ControlIdClient
+from face_agent.jpeg_fit import fit_jpeg, make_thumb
 from face_agent.controlid_uhf_client import ControlIdTerminal, ControlIdUhfClient
 
 logger = logging.getLogger(__name__)
@@ -643,6 +644,34 @@ def run_zaccess_client(
                 except Exception as e:
                     logger.error("ZAccess: falha ao cadastrar rosto de %s no terminal %s - %s", name, terminal_id, e)
                     _emit_enroll_ack(person_id, terminal_id, "failed", str(e))
+
+            threading.Thread(target=run, daemon=True).start()
+
+        @sio.on("face:photos-wanted", namespace=NAMESPACE)
+        def face_photos_wanted(data):
+            """Banco de faciais do ZAccess: manda as fotos do roster local de quem o servidor
+            ainda nao tem (rostos cadastrados antes do banco existir). So leitura do roster;
+            nada muda nos terminais. Uma foto por evento, em thread propria."""
+            wanted = [str(e) for e in (data or {}).get("employeeNos") or [] if e]
+
+            def run():
+                sent = 0
+                for employee_no in wanted:
+                    try:
+                        jpeg = local_store.find_photo(employee_no)
+                        if not jpeg or not sio.connected:
+                            continue
+                        jpeg = fit_jpeg(jpeg, 200 * 1024)
+                        payload = {"employeeNo": employee_no, "jpegBase64": base64.b64encode(jpeg).decode()}
+                        thumb = make_thumb(jpeg)
+                        if thumb:
+                            payload["thumbBase64"] = base64.b64encode(thumb).decode()
+                        sio.emit("face:photo-backup", payload, namespace=NAMESPACE)
+                        sent += 1
+                        time.sleep(0.2)  # nao entupir o socket com dezenas de fotos de uma vez
+                    except Exception as e:
+                        logger.warning("ZAccess: foto de %s nao enviada ao banco de faciais - %s", employee_no, e)
+                logger.info("ZAccess: %d/%d foto(s) enviada(s) ao banco de faciais", sent, len(wanted))
 
             threading.Thread(target=run, daemon=True).start()
 

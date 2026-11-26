@@ -31,3 +31,25 @@ def fit_jpeg(jpeg: bytes, max_bytes: int) -> bytes:
         if side * 0.85 < MIN_SIDE:
             raise FaceProvisioningError(f"nao deu para reduzir o JPEG de {len(jpeg)} bytes para {max_bytes} bytes")
         scale *= 0.85
+
+
+THUMB_SIDE = 160          # mesma miniatura que o app gera (face_photo.dart)
+THUMB_MAX_BYTES = 24 * 1024
+
+
+def make_thumb(jpeg: bytes) -> bytes | None:
+    """Miniatura quadrada (corte central) para o app mostrar o rosto. None sem Pillow ou se nao abrir."""
+    try:
+        from PIL import Image
+        img = Image.open(io.BytesIO(jpeg)).convert("RGB")
+    except Exception:
+        return None
+    side = min(img.size)
+    left, top = (img.width - side) // 2, (img.height - side) // 2
+    thumb = img.crop((left, top, left + side, top + side)).resize((THUMB_SIDE, THUMB_SIDE), Image.LANCZOS)
+    for quality in (80, 65, 50):
+        out = io.BytesIO()
+        thumb.save(out, "JPEG", quality=quality, optimize=True)
+        if out.tell() <= THUMB_MAX_BYTES:
+            return out.getvalue()
+    return None

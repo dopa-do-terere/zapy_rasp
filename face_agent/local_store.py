@@ -273,6 +273,16 @@ class LocalStore:
             ).fetchone()
         return row[0] if row else None
 
+    def find_photo(self, employee_no: str) -> Optional[bytes]:
+        """Foto dessa pessoa em qualquer terminal do roster: o servidor nao guarda foto, entao
+        terminal novo recebe o rosto copiado de outro terminal deste zapy."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT jpeg FROM roster WHERE employee_no = ? AND length(jpeg) > 0 ORDER BY enrolled DESC LIMIT 1",
+                (employee_no,),
+            ).fetchone()
+        return row[0] if row else None
+
     # --- card_roster (mesma ideia da roster de face, tabela própria — ver comentário no
     # schema) ---
 

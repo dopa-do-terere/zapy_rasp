@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from urllib.parse import urlparse
 
 import requests
+from requests.auth import HTTPDigestAuth
 
 from .errors import FaceProvisioningError
 
@@ -72,6 +73,18 @@ class IntelbrasTerminal:
 class IntelbrasClient:
     def __init__(self, terminal: IntelbrasTerminal):
         self.terminal = terminal
+        self._auth = (terminal.username, terminal.password)  # Basic; vira Digest se o XPE pedir
+
+    def _request(self, method: str, url: str, **kw) -> requests.Response:
+        """A HTTP API do XPE pode estar em Basic ou Digest (Seguranca > HTTP API). Comeca em
+        Basic e, se o aparelho responder 401 pedindo Digest, troca e repete uma vez."""
+        send = requests.post if method == "POST" else requests.get
+        res = send(url, auth=self._auth, verify=self.terminal.verify_tls, timeout=REQUEST_TIMEOUT_SECONDS, **kw)
+        if (res.status_code == 401 and isinstance(self._auth, tuple)
+                and "digest" in res.headers.get("WWW-Authenticate", "").lower()):
+            self._auth = HTTPDigestAuth(self.terminal.username, self.terminal.password)
+            res = send(url, auth=self._auth, verify=self.terminal.verify_tls, timeout=REQUEST_TIMEOUT_SECONDS, **kw)
+        return res
 
     def _base_url(self) -> str:
         proto = "https" if self.terminal.https else "http"
@@ -85,11 +98,7 @@ class IntelbrasClient:
         if data is not None:
             payload["data"] = data
         try:
-            res = requests.post(
-                url, json=payload,
-                auth=(self.terminal.username, self.terminal.password),
-                verify=self.terminal.verify_tls, timeout=REQUEST_TIMEOUT_SECONDS,
-            )
+            res = self._request("POST", url, json=payload)
         except requests.RequestException as e:
             raise FaceProvisioningError(f"falha de rede ao chamar {self.terminal.host}: {e}") from e
         if res.status_code != 200:
@@ -297,10 +306,7 @@ class IntelbrasClient:
         path = urlparse(picture_ref).path if "://" in picture_ref else None
         url = f"{self._base_url()}{path}" if path else f"{self._base_url()}/Image/DoorPicture/{picture_ref}"
         try:
-            res = requests.get(
-                url, auth=(self.terminal.username, self.terminal.password),
-                verify=self.terminal.verify_tls, timeout=REQUEST_TIMEOUT_SECONDS,
-            )
+            res = self._request("GET", url)
         except requests.RequestException as e:
             logger.warning("falha ao baixar foto do evento (%s): %s", self.terminal.host, e)
             return None

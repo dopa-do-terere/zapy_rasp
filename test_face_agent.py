@@ -2962,3 +2962,31 @@ class FitJpegTest(unittest.TestCase):
         self.assertEqual(out[:2], b"\xff\xd8")
         self.assertGreaterEqual(min(Image.open(io.BytesIO(out)).size), MIN_SIDE)
         self.assertIs(fit_jpeg(out, 100 * 1024), out)  # ja cabe: nao mexe
+
+
+class IntelbrasDigestFallbackTest(unittest.TestCase):
+    def test_switches_to_digest_when_xpe_asks(self):
+        from requests.auth import HTTPDigestAuth
+        client = IntelbrasClient(IntelbrasTerminal(host="10.0.0.1", port=80, username="admin", password="pw"))
+        r401 = MagicMock(status_code=401, headers={"WWW-Authenticate": 'Digest realm="x"'}, text="")
+        r200 = MagicMock(status_code=200, headers={}, text="{}")
+        r200.json.return_value = {"retcode": 0}
+        with patch("face_agent.intelbras_client.requests.post", side_effect=[r401, r200, r200]) as post:
+            self.assertEqual(client.call("system", "info"), {"retcode": 0})
+            client.call("system", "info")
+        auths = [c.kwargs["auth"] for c in post.call_args_list]
+        self.assertEqual(auths[0], ("admin", "pw"))
+        self.assertIsInstance(auths[1], HTTPDigestAuth)
+        self.assertIsInstance(auths[2], HTTPDigestAuth)  # lembra: nao volta a tentar Basic
+
+
+class FindPhotoTest(unittest.TestCase):
+    def test_finds_face_of_person_in_any_terminal(self):
+        import tempfile
+        from face_agent.local_store import LocalStore
+        with tempfile.TemporaryDirectory() as d:
+            store = LocalStore(os.path.join(d, "s.sqlite3"))
+            store.upsert_roster("t1", "9000", "Ana", b"\xff\xd8foto\xff\xd9", None)
+            self.assertEqual(store.find_photo("9000"), b"\xff\xd8foto\xff\xd9")
+            self.assertIsNone(store.find_photo("9001"))
+            store.close()

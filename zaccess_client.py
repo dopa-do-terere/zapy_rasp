@@ -591,7 +591,9 @@ def run_zaccess_client(
             terminal_id = str(data.get("terminalId") or "")
             name = data.get("name") or employee_no
             jpeg_b64 = data.get("jpegBase64")
-            if not person_id or not terminal_id or not jpeg_b64:
+            # Sem foto no evento (copyFromRoster): terminal novo, rosto copiado do roster local.
+            copy = bool(data.get("copyFromRoster")) and not jpeg_b64
+            if not person_id or not terminal_id or not (jpeg_b64 or copy):
                 logger.warning("ZAccess: face:enroll inválido - %s", {k: v for k, v in data.items() if k != "jpegBase64"})
                 return
 
@@ -608,7 +610,10 @@ def run_zaccess_client(
 
             def run():
                 try:
-                    jpeg = base64.b64decode(jpeg_b64)
+                    jpeg = base64.b64decode(jpeg_b64) if jpeg_b64 else local_store.find_photo(employee_no)
+                    if not jpeg:
+                        _emit_enroll_ack(person_id, terminal_id, "failed", "sem foto deste morador no zapy para copiar")
+                        return
                     # Validade por data (validFrom/validUntil): expirada nem guarda; fora da
                     # janela guarda no roster com ack pendente e o schedule_enforcer cadastra
                     # (e manda o ack "enrolled") quando a janela abrir.

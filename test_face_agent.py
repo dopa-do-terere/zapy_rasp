@@ -1754,6 +1754,13 @@ class EventsPollerTest(unittest.TestCase):
         self.assertEqual(events, fake_events)
         store.set_cursor.assert_called_once_with(fake_cursor)
 
+    def test_poll_wait_backs_off_on_consecutive_failures(self):
+        from face_agent.events_poller import poll_wait
+        self.assertEqual(poll_wait(15, 0), 15)
+        self.assertEqual(poll_wait(15, 1), 30)
+        self.assertEqual(poll_wait(15, 3), 120)
+        self.assertEqual(poll_wait(15, 10), 600)  # teto de 10 min: senha errada nao trava o aparelho
+
 
 
 class MakeEventsFetchTest(unittest.TestCase):

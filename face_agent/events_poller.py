@@ -490,6 +490,17 @@ def make_events_fetch(client, terminal_id: str, clock=time.monotonic):
     return fetch
 
 
+MAX_POLL_BACKOFF_SECONDS = 600.0
+
+
+def poll_wait(interval_seconds: float, falhas: int) -> float:
+    """Espera ate o proximo ciclo: dobra a cada falha seguida, no maximo 10 min. Senha errada
+    nao pode virar tentativa a cada 15 s: a Intelbras bloqueia o login do aparelho inteiro."""
+    if falhas <= 0:
+        return interval_seconds
+    return min(interval_seconds * (2 ** falhas), MAX_POLL_BACKOFF_SECONDS)
+
+
 class EventsPoller:
     """Cuida do poll de eventos de UM terminal — persiste o cursor no
     LocalStore entre ciclos (sobrevive a restart do processo). `fetch` é uma
@@ -514,14 +525,17 @@ class EventsPoller:
         stop = threading.Event()
 
         def run():
+            falhas = 0
             while not stop.is_set():
                 try:
                     events = self.poll_once()
+                    falhas = 0
                     if events:
                         on_events(events)
                 except Exception:
-                    logger.exception("events_poller (%s): falha no ciclo de poll", self._terminal_id)
-                stop.wait(timeout=interval_seconds)
+                    falhas += 1
+                    logger.exception("events_poller (%s): falha no ciclo de poll (%d seguidas)", self._terminal_id, falhas)
+                stop.wait(timeout=poll_wait(interval_seconds, falhas))
 
         thread = threading.Thread(target=run, daemon=True)
         thread.start()

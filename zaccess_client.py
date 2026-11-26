@@ -182,7 +182,7 @@ def run_zaccess_client(
     # a restart do processo (arquivo em disco), pra schedule_enforcer/events_poller
     # funcionarem mesmo com a nuvem fora do ar.
     local_store = LocalStore()
-    event_pollers: dict[str, tuple[threading.Thread, threading.Event]] = {}
+    event_pollers: dict[str, tuple[threading.Thread, threading.Event, object]] = {}
     reconnect_delay = RECONNECT_DELAY
     _bridge["face_clients"] = face_clients  # dicts estáveis, reapontam uma vez só (ver _bridge acima)
     _bridge["uhf_clients"] = uhf_clients
@@ -310,9 +310,12 @@ def run_zaccess_client(
             """(Re)inicia um EventsPoller por terminal facial configurado, parando os que
             saíram da config (ex.: terminal removido no painel). Control iD entra por poll
             de access_logs — ver make_events_fetch."""
+            # Para quem saiu da config e quem ganhou client novo (cada device:config recria os
+            # clients): sem isso o poller seguia com a senha antiga depois de trocada no painel.
+            # O cursor fica no local_store, entao reiniciar nao perde evento.
             for tid in list(event_pollers.keys()):
-                if tid not in face_clients:
-                    _, stop_evt = event_pollers.pop(tid)
+                if event_pollers[tid][2] is not face_clients.get(tid):
+                    _, stop_evt, _ = event_pollers.pop(tid)
                     stop_evt.set()
 
             for tid, client in face_clients.items():
@@ -323,7 +326,7 @@ def run_zaccess_client(
                     continue
                 poller = EventsPoller(local_store, tid, fetch)
                 thread, stop_evt = poller.start(_emit_identified_events, interval_seconds=FACE_EVENTS_POLL_INTERVAL)
-                event_pollers[tid] = (thread, stop_evt)
+                event_pollers[tid] = (thread, stop_evt, client)
 
         # ---- Avisos dos moradores para a portaria (Cockpit) ----
         @sio.on("notices:sync", namespace=NAMESPACE)
@@ -1123,7 +1126,7 @@ def run_zaccess_client(
             input_push_stop.set()
             face_status_stop.set()
             schedule_stop.set()
-            for _, stop_evt in event_pollers.values():
+            for _, stop_evt, _ in event_pollers.values():
                 stop_evt.set()
             event_pollers.clear()
             if sio.connected:
